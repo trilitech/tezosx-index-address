@@ -466,9 +466,9 @@ cargo test                                   <span class="cm"># existing tests u
   </div>
 
   <h4>gas.rs &mdash; constants (NOT gated, follows BLS pattern)</h4>
-<pre><code><span class="cm">/// Source: proto_024 michelson_v1_gas_costs_generated.ml:1697</span>
+<pre><code><span class="cm">/// https://gitlab.com/tezos/tezos/-/blob/5781c10e4e7d/.../michelson_v1_gas_costs_generated.ml#L1697</span>
 <span class="kw">pub const</span> INDEX_ADDRESS: u32 = 3480;
-<span class="cm">/// Source: proto_024 michelson_v1_gas_costs_generated.ml:1589</span>
+<span class="cm">/// https://gitlab.com/tezos/tezos/-/blob/5781c10e4e7d/.../michelson_v1_gas_costs_generated.ml#L1589</span>
 <span class="kw">pub const</span> GET_ADDRESS_INDEX: u32 = 530;</code></pre>
   <p>BLS gas constants (<code>ADD_BLS_FR</code>, etc.) are not gated either &mdash; only the consuming code is. Same pattern here.</p>
 
@@ -494,20 +494,25 @@ I::GetAddressIndex =&gt; {
     <p>INDEX_ADDRESS and GET_ADDRESS_INDEX work end-to-end in MIR with the in-memory <code>Ctx</code>. Zero <code>todo!()</code> remaining in <code>contrib/mir/</code>.</p>
   </div>
 
-  <h4>Tests (in interpreter.rs #[test] module, run with <code>--features address-registry</code>)</h4>
-  <ul>
-    <li><strong>Basic</strong>: <code>{ INDEX_ADDRESS }</code> with address &rarr; nat on stack</li>
-    <li><strong>Idempotency</strong>: same address twice &rarr; same nat</li>
-    <li><strong>Distinct</strong>: 3 addresses &rarr; 3 different nats (0, 1, 2)</li>
-    <li><strong>Entrypoint stripping</strong>: Address with entrypoint "do" and "default", same KT1 &rarr; same index</li>
-    <li><strong>sr1</strong>: smart rollup address works</li>
-    <li><strong>GET unregistered</strong>: &rarr; <code>None</code></li>
-    <li><strong>GET registered</strong>: INDEX then GET &rarr; <code>Some(n)</code></li>
-    <li><strong>Sequence</strong>: INDEX(A), INDEX(B), GET(A), GET(B), GET(C) &rarr; <code>Some(0), Some(1), None</code></li>
-    <li><strong>All variants</strong>: tz1, tz2, tz3, KT1, sr1 &mdash; each gets a distinct index</li>
-    <li><strong>Cross-variant</strong>: KT1 and tz1 with same raw hash &rarr; different index (tag prefix differs)</li>
-    <li><strong>Out of gas</strong>: set gas to 1 milligas, call INDEX_ADDRESS &rarr; <code>OutOfGas</code>, stack unchanged</li>
-  </ul>
+  <h4>Tests &mdash; mutation-resistant (run with <code>--features address-registry</code>)</h4>
+  <p>Each test is designed to kill a specific mutation. If a mutant survives, the test suite has a gap.</p>
+  <table>
+    <thead><tr><th>Test</th><th>Mutation killed</th></tr></thead>
+    <tbody>
+      <tr><td>INDEX returns Nat (not Int, not Option)</td><td>Wrong TypedValue constructor</td></tr>
+      <tr><td>GET returns Option&lt;Nat&gt; (not bare Nat)</td><td>Forgetting new_option wrapper</td></tr>
+      <tr><td>First index = 0</td><td>Counter starts at 1</td></tr>
+      <tr><td>Second distinct addr = 1</td><td>Counter not incrementing</td></tr>
+      <tr><td>Same addr twice = same index</td><td>Idempotency broken</td></tr>
+      <tr><td>GET on fresh ctx = None</td><td>INDEX/GET swapped</td></tr>
+      <tr><td>GET does not consume an index</td><td>GET accidentally writes</td></tr>
+      <tr><td>Same KT1 with %do and %default = same index</td><td>Entrypoint not stripped</td></tr>
+      <tr><td>Gas exactly at cost: succeeds</td><td>Off-by-one in gas check</td></tr>
+      <tr><td>Gas at cost-1: OutOfGas, stack unchanged</td><td>Gas not consumed / wrong amount</td></tr>
+      <tr><td>Gas consumed = exact constant value</td><td>Swapped gas constants</td></tr>
+      <tr><td>INDEX(A), GET(B)=None, INDEX(B), GET(A)=Some(0)</td><td>Cross-instruction state corruption</td></tr>
+    </tbody>
+  </table>
 
   <div class="callout compiles">
     <div class="callout-title">Definition of Done</div>
