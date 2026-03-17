@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: INDEX_ADDRESS / GET_ADDRESS_INDEX in MIR</title>
+<style>
+  :root {
+    --bg: #1a1a2e; --surface: #16213e; --surface2: #0f3460;
+    --accent: #e94560; --accent2: #533483;
+    --text: #eaeaea; --text-muted: #a0a0b8;
+    --code-bg: #0d1117; --border: #2a2a4a;
+    --green: #4ec9b0; --yellow: #dcdcaa; --blue: #569cd6; --orange: #ce9178; --red: #f44747;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; }
+  .container { max-width: 1020px; margin: 0 auto; padding: 2rem 2rem 4rem; }
+  header { background: linear-gradient(135deg, var(--surface), var(--surface2)); border-bottom: 3px solid var(--accent); padding: 3rem 2rem; margin-bottom: 2rem; }
+  header h1 { max-width: 1020px; margin: 0 auto; font-size: 1.8rem; font-weight: 700; }
+  header h1 code { color: var(--accent); background: none; padding: 0; font-size: inherit; }
+  header p.subtitle { max-width: 1020px; margin: 0.5rem auto 0; color: var(--text-muted); font-size: 1rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 1rem; padding-bottom: 0.4rem; border-bottom: 2px solid var(--accent); }
+  h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; color: var(--green); }
+  h4 { font-size: 0.95rem; margin: 1rem 0 0.4rem; color: var(--blue); }
+  p { margin: 0.5rem 0; }
+  code { font-family: 'JetBrains Mono', monospace; background: var(--code-bg); padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.88em; color: var(--yellow); }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-left: 4px solid var(--accent2); border-radius: 6px; padding: 0.8rem 1rem; overflow-x: auto; margin: 0.7rem 0; font-size: 0.82rem; line-height: 1.5; }
+  pre code { background: none; padding: 0; color: var(--text); }
+  .kw { color: var(--blue); } .cm { color: #6a9955; font-style: italic; } .ty { color: var(--green); } .fn { color: var(--yellow); } .st { color: var(--orange); }
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 0.45rem 0.7rem; border: 1px solid var(--border); }
+  th { background: var(--surface2); color: var(--green); text-transform: uppercase; font-size: 0.75rem; font-weight: 600; }
+  td { background: var(--surface); } tr:hover td { background: var(--surface2); }
+  ul, ol { margin: 0.4rem 0 0.4rem 1.4rem; } li { margin: 0.2rem 0; } li strong { color: var(--green); }
+  .callout { border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem 1rem; margin: 0.8rem 0; }
+  .callout.rationale { border-color: var(--accent2); background: rgba(83,52,131,0.12); }
+  .callout.invariant { border-color: var(--green); background: rgba(78,201,176,0.08); }
+  .callout.safety { border-color: var(--blue); background: rgba(86,156,214,0.08); }
+  .callout.compiles { border-color: var(--green); background: rgba(78,201,176,0.06); border-width: 2px; }
+  .callout-title { font-weight: 700; margin-bottom: 0.25rem; font-size: 0.92rem; }
+  .callout.rationale .callout-title { color: var(--accent2); }
+  .callout.invariant .callout-title { color: var(--green); }
+  .callout.safety .callout-title { color: var(--blue); }
+  .callout.compiles .callout-title { color: var(--green); }
+  .badge { display: inline-block; padding: 0.1em 0.5em; border-radius: 12px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; vertical-align: middle; }
+  .badge.p1 { background: var(--blue); color: white; }
+  .badge.p2 { background: var(--accent2); color: white; }
+  .badge.bonus { background: var(--accent); color: white; }
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; margin: 1.2rem 0; }
+  .toc h3 { margin-top: 0; color: var(--text); } .toc ul { list-style: none; margin-left: 0; }
+  .toc li { margin: 0.25rem 0; } .toc li::before { content: "# "; color: var(--accent); font-weight: bold; }
+  .toc a { color: var(--text-muted); } .toc a:hover { color: var(--accent); }
+  .commit { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin: 1.2rem 0; padding: 1.2rem; }
+  .commit-header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+  .commit-num { width: 2rem; height: 2rem; background: var(--accent); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; flex-shrink: 0; }
+  .commit-title { font-size: 1rem; font-weight: 600; }
+  .commit-files { color: var(--orange); font-size: 0.82rem; margin: 0.3rem 0; }
+  .phase-header { background: linear-gradient(90deg, var(--surface2), var(--surface)); border: 2px solid var(--accent); border-radius: 8px; padding: 0.8rem 1.2rem; margin: 2rem 0 0.5rem; }
+  .phase-header h3 { margin: 0; color: var(--text); font-size: 1.1rem; }
+  .phase-header p { margin: 0.2rem 0 0; color: var(--text-muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Implementation Plan: <code>INDEX_ADDRESS</code> / <code>GET_ADDRESS_INDEX</code></h1>
+  <p class="subtitle">Branch: <code>saroupille@mir-address-registry</code> &mdash; 8 commits, 3 phases &mdash; Every commit compiles. Feature-flagged.</p>
+</header>
+
+<div class="container">
+
+<nav class="toc">
+  <h3>Table of Contents</h3>
+  <ul>
+    <li><a href="#constraint">Compilation Constraint</a></li>
+    <li><a href="#rationale">Architectural Decisions</a></li>
+    <li><a href="#persistence">Persistence &amp; Invariants</a></li>
+    <li><a href="#phase1">Phase 1: MIR Library (commits 1-6)</a></li>
+    <li><a href="#phase2">Phase 2: Kernel Integration (commits 7-8)</a></li>
+    <li><a href="#bonus">Bonus: View Restriction (commit 8)</a></li>
+  </ul>
+</nav>
+
+<!-- ================================================================ -->
+<h2 id="constraint">Compilation Constraint &amp; Feature Flag</h2>
+
+<div class="callout compiles">
+  <div class="callout-title">Non-negotiable: every commit compiles and existing tests pass</div>
+  <p>All new code is behind <code>#[cfg(feature = "address-registry")]</code>. When the feature is <strong>disabled</strong> (default), the code doesn't exist &mdash; zero risk. When <strong>enabled</strong>, all pieces must be consistent.</p>
+</div>
+
+<div class="callout rationale">
+  <div class="callout-title">Feature flag: <code>address-registry</code></div>
+  <p>Follows the existing <code>bls</code> pattern (used in 10 files). All address registry code is gated behind this flag:</p>
+  <ul>
+    <li><code>CtxTrait</code> methods &mdash; only exist when feature is on</li>
+    <li><code>Instruction</code> variants &mdash; only exist when feature is on</li>
+    <li>Typechecker/interpreter arms &mdash; only exist when feature is on</li>
+    <li>Unsupported macro &mdash; includes INDEX_ADDRESS/GET_ADDRESS_INDEX when feature is <strong>off</strong> (same pattern as PAIRING_CHECK/bls)</li>
+  </ul>
+  <p><strong>Eliminates all <code>todo!()</code> stubs</strong>: the kernel doesn't need stubs because the trait methods don't exist when the feature is disabled. The kernel enables the feature when ready (Phase 2).</p>
+  <p><strong>Easy to verify</strong>: <code>grep -rn 'cfg.*address.registry' contrib/mir/src/</code> lists every gated block. <code>cargo build</code> (without feature) confirms nothing leaks.</p>
+  <p><strong>Scope of impact</strong>: only <code>kernel_latest</code> uses the local MIR crate (<code>path = "../../contrib/mir"</code>). The 5 other kernels (ebisu, farfadet*) pin a git revision &mdash; they are immune to our changes.</p>
+</div>
+
+<div class="callout safety">
+  <div class="callout-title">Macro layering (follows bls pattern)</div>
+<pre><code><span class="cm">// Base: always unsupported (sapling, open_chest, etc.)</span>
+<span class="kw">macro_rules!</span> micheline_unsupported_instructions_base { ... }
+
+<span class="cm">// address-registry OFF: add INDEX_ADDRESS, GET_ADDRESS_INDEX to unsupported</span>
+<span class="cm">// address-registry ON: instructions handled by typechecker, not unsupported</span>
+#[cfg(<span class="kw">not</span>(feature = <span class="st">"address-registry"</span>))]
+<span class="kw">macro_rules!</span> micheline_unsupported_instructions_common {
+    () =&gt; { $crate::micheline_unsupported_instructions_base!()
+        | Prim::INDEX_ADDRESS | Prim::GET_ADDRESS_INDEX };
+}
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+<span class="kw">macro_rules!</span> micheline_unsupported_instructions_common {
+    () =&gt; { $crate::micheline_unsupported_instructions_base!() };
+}
+
+<span class="cm">// bls layer (unchanged)</span>
+#[cfg(feature = <span class="st">"bls"</span>)]
+<span class="kw">macro_rules!</span> micheline_unsupported_instructions { ... }
+#[cfg(<span class="kw">not</span>(feature = <span class="st">"bls"</span>))]
+<span class="kw">macro_rules!</span> micheline_unsupported_instructions { ... | Prim::PAIRING_CHECK }
+</code></pre>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="rationale">Architectural Decisions</h2>
+
+<div class="callout rationale">
+  <div class="callout-title">D1: Methods on CtxTrait, behind feature flag</div>
+  <p><code>LazyStorage</code> is separate because BigMap <em>methods</em> consume it as parameter (<code>map.mem(&amp;key, *ctx.lazy_storage())</code>). <code>index_address</code> / <code>get_address_index</code> are called <strong>directly by the interpreter</strong>, like <code>voting_power()</code> or <code>origination_counter()</code>. Two methods don't justify a separate trait + boxing indirection.</p>
+  <p>All behind <code>#[cfg(feature = "address-registry")]</code> &mdash; when disabled, <code>CtxTrait</code> is unchanged, no stubs needed.</p>
+</div>
+
+<div class="callout rationale">
+  <div class="callout-title">D2: Return Result</div>
+  <p>In the kernel, <code>host.store_write()</code> can fail. The in-memory <code>Ctx</code> never fails &mdash; but the trait must accommodate both. New variant <code>InterpretError::AddressRegistryError(#[from] ...)</code> follows the <code>LazyStorageError</code> pattern.</p>
+</div>
+
+<div class="callout rationale">
+  <div class="callout-title">D3: BigUint everywhere</div>
+  <p>Michelson <code>nat</code> = <code>BigUint</code> in MIR. Same as <code>level()</code>, <code>voting_power()</code>. No <code>u64</code> intermediate.</p>
+</div>
+
+<div class="callout rationale">
+  <div class="callout-title">D4: get_address_index(&amp;self)</div>
+  <p>Verified: <code>Runtime::store_read()</code> takes <code>&amp;self</code>. Interpreter holds <code>&amp;mut ctx</code> &mdash; <code>&amp;self</code> methods are callable via reborrow.</p>
+</div>
+
+<div class="callout rationale">
+  <div class="callout-title">D5: Empty registry in Default</div>
+  <p>Zero address at index 0 is a protocol invariant, enforced by <code>address_registry_storage.ml</code> at context init. MIR's <code>Ctx::default()</code> starts with an empty HashMap. Tests call <code>ctx.index_address(&amp;zero_addr)</code> explicitly when needed. Kernel enforces it at genesis.</p>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="persistence">Persistence &amp; Invariants</h2>
+
+<div class="callout invariant">
+  <div class="callout-title">Idempotency</div>
+  <p><code>HashMap::entry(addr).or_insert_with(|| ...)</code>: if key exists, no mutation occurs. Same address always returns same index. Kernel: <code>store_read</code> first &mdash; if found, return without writing.</p>
+</div>
+
+<div class="callout invariant">
+  <div class="callout-title">Unique, monotonically increasing indices</div>
+  <p>Counter increments only in <code>or_insert_with</code>. Each address inserted at most once. N distinct addresses &rarr; indices 0..N-1.</p>
+</div>
+
+<div class="callout invariant">
+  <div class="callout-title">Entrypoint stripped</div>
+  <p>Interpreter uses <code>&amp;addr.hash</code> only. <code>KT1xxx%default</code> and <code>KT1xxx%do</code> &rarr; same index. Matches OCaml <code>address.destination</code>.</p>
+</div>
+
+<div class="callout invariant">
+  <div class="callout-title">Rollback preserves consistency</div>
+  <p>Kernel: registry lives under <code>/evm/world_state/indexes/address_registry/</code>. <code>SafeStorage</code> snapshots <code>/evm/world_state</code> &mdash; both counter and entries are restored atomically on batch failure. No orphan indices.</p>
+  <p>Internal op failure: parent's writes persist (correct L1 behavior &mdash; each transaction is atomic unto itself).</p>
+</div>
+
+<div class="callout invariant">
+  <div class="callout-title">Path safety &mdash; no collision across address variants</div>
+  <p><code>AddressHash::to_bytes()</code> prepends a type tag: <code>0x00</code> (implicit), <code>0x01</code> (KT1), <code>0x03</code> (sr1). A KT1 and tz1 with identical raw hash produce different byte sequences &rarr; different hex &rarr; different storage paths. Verified in <code>address_hash.rs:185-199</code>.</p>
+  <p><code>hex::encode</code> produces only <code>[0-9a-f]</code>. Max path length: 44 (base) + 42 (hex) = 86 chars. PVM limit: 250. Safe.</p>
+</div>
+
+<div class="callout invariant">
+  <div class="callout-title">Kernel read errors must NOT be swallowed</div>
+  <p>In <code>index_address</code>, a <code>store_read_all</code> failure must distinguish <code>PathNotFound</code> (not registered &rarr; proceed to register) from other errors (I/O failure &rarr; propagate). Swallowing non-PathNotFound errors would cause duplicate registrations and counter desync.</p>
+</div>
+
+<div class="callout safety">
+  <div class="callout-title">What does NOT break (verified by audit)</div>
+  <ul>
+    <li><strong>CtxTrait extension</strong>: feature flag gates the new methods. When off, trait is unchanged. When on, Rust compiler forces all implementors to add the new methods. Only <code>kernel_latest</code> is affected (local path dep); 5 other kernels pin a git rev.</li>
+    <li><strong>InterpretError</strong>: no exhaustive match exists. The only match on it (<code>tzt/expectation.rs:64-80</code>) ends with <code>(_, _) =&gt; false</code>. The <code>From&lt;SigCostError&gt;</code> impl (line 68) matches on <code>SigCostError</code>, not <code>InterpretError</code>.</li>
+    <li><strong>Instruction enum</strong>: no serialization (no serde derives). Only one exhaustive match: <code>interpreter.rs:284-1927</code> &mdash; handled by adding gated arms in commit 2.</li>
+    <li><strong>Ctx::default()</strong>: used in 150+ tests. New fields are behind <code>#[cfg]</code>, so existing <code>Default</code> is unchanged when feature is off.</li>
+    <li><strong>No existing method modified</strong>: all 16 existing <code>CtxTrait</code> methods are untouched.</li>
+  </ul>
+</div>
+
+<h2 id="docstrings">Docstring &amp; Comment Specification</h2>
+
+<p>Every piece of code in this feature must be <strong>self-evident to a reviewer</strong> (human or agent). Comments explain <em>invariants</em> and <em>why</em>, never paraphrase what the code does.</p>
+
+<h3>What to document (with rationale)</h3>
+<table>
+  <thead><tr><th>Location</th><th>Comment</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Feature flag in <code>Cargo.toml</code></td>
+      <td><code># Not in default. Kernel enables when ready.</code></td>
+      <td>Reviewer must know it's opt-in</td>
+    </tr>
+    <tr>
+      <td><code>CtxTrait::index_address</code> docstring</td>
+      <td><code>/// Idempotent: same address always returns same index.<br>/// Invariant: key is AddressHash &mdash; entrypoint is NOT part of the key.</code></td>
+      <td>Non-obvious: Michelson <code>address</code> includes entrypoint, but registry ignores it</td>
+    </tr>
+    <tr>
+      <td><code>CtxTrait::get_address_index</code> docstring</td>
+      <td><code>/// Returns Some(index) if registered, None otherwise.</code></td>
+      <td>Contract of the method. No implementation detail.</td>
+    </tr>
+    <tr>
+      <td><code>#[cfg]</code> on trait methods</td>
+      <td><code>// address-registry methods gated because they add trait obligations.<br>// Unlike bls (enum variants only), this gates trait methods &mdash; new pattern.<br>// See bls feature for the enum/match pattern.</code></td>
+      <td>New pattern not seen before in MIR. Must be explicit for future contributors.</td>
+    </tr>
+    <tr>
+      <td>Interpreter: <code>addr.hash</code></td>
+      <td><code>// Invariant: entrypoint stripped.</code></td>
+      <td>The key semantic decision. Without this comment, someone might use the full <code>addr</code>.</td>
+    </tr>
+    <tr>
+      <td>Kernel: <code>match store_read_all</code></td>
+      <td><code>// Invariant: must distinguish PathNotFound from I/O errors.<br>// Swallowing non-PathNotFound would cause duplicate registration.</code></td>
+      <td>Correctness-critical. The bug this prevents is subtle.</td>
+    </tr>
+    <tr>
+      <td>Gas constants</td>
+      <td><code>/// Source: proto_024 michelson_v1_gas_costs_generated.ml:NNNN</code></td>
+      <td>Traceability. No paraphrase of what the constant is.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>What NOT to document</h3>
+<table>
+  <thead><tr><th>Anti-pattern</th><th>Example</th><th>Why it's wrong</th></tr></thead>
+  <tbody>
+    <tr><td>Paraphrase the code</td><td><code>// Push result as Nat</code></td><td><code>stack.push(TypedValue::Nat(...))</code> says it already</td></tr>
+    <tr><td>Restate the type signature</td><td><code>// address -&gt; nat</code></td><td>Visible in the match arm pattern</td></tr>
+    <tr><td>Explain Rust semantics</td><td><code>// AddressHash: Clone+Hash+Eq</code></td><td>The derive is visible on the type definition</td></tr>
+    <tr><td>Describe gas amount in comment</td><td><code>// Gas: 3480 milligas</code></td><td>The constant name + value say it</td></tr>
+    <tr><td>Rationale in gas comment</td><td><code>// Higher due to potential write</code></td><td>Design rationale belongs in the design doc, not inline</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="phase1">Phase 1: MIR Library</h2>
+
+<div class="phase-header">
+  <h3><span class="badge p1">Phase 1</span> <code>contrib/mir/</code> &mdash; commits 1 to 5</h3>
+  <p>All behind feature flag. No kernel changes. Each commit compiles with <code>cargo build</code> (feature off) and <code>cargo build --features address-registry</code> (feature on).</p>
+</div>
+
+<!-- COMMIT 1 -->
+<div class="commit">
+  <div class="commit-header">
+    <div class="commit-num">1</div>
+    <div class="commit-title">Add index_address / get_address_index to CtxTrait + kernel stubs</div>
+    <span class="badge p1">P1</span>
+  </div>
+
+  <h4>Cargo.toml &mdash; new feature flag</h4>
+<pre><code>[features]
+default = [<span class="st">"bls"</span>, <span class="st">"allow_lazy_storage_transfer"</span>]
+bls = [<span class="st">"dep:blst"</span>, <span class="st">"tezos_crypto_rs/bls"</span>]
+allow_lazy_storage_transfer = []
+address-registry = []  <span class="cm">// NEW — not in default</span></code></pre>
+
+  <h4>context.rs &mdash; all behind <code>#[cfg(feature = "address-registry")]</code></h4>
+<pre><code>#[cfg(feature = <span class="st">"address-registry"</span>)]
+#[derive(Debug, PartialEq, Eq, Clone, thiserror::Error)]
+<span class="kw">pub enum</span> <span class="ty">AddressRegistryError</span> {
+    #[error(<span class="st">"address registry error: {0}"</span>)]
+    Other(String),
+}
+
+<span class="cm">// In CtxTrait:</span>
+
+<span class="cm">/// Idempotent: same address always returns same index.</span>
+<span class="cm">/// Invariant: key is AddressHash — entrypoint is NOT part of the registry key.</span>
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+<span class="kw">fn</span> <span class="fn">index_address</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, address: &amp;AddressHash)
+    -&gt; Result&lt;BigUint, AddressRegistryError&gt;;
+
+<span class="cm">/// Returns Some(index) if registered, None otherwise.</span>
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+<span class="kw">fn</span> <span class="fn">get_address_index</span>(&amp;<span class="kw">self</span>, address: &amp;AddressHash)
+    -&gt; Result&lt;Option&lt;BigUint&gt;, AddressRegistryError&gt;;
+
+<span class="cm">// Ctx struct:</span>
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+<span class="kw">pub</span> address_registry: HashMap&lt;AddressHash, BigUint&gt;,
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+address_registry_counter: BigUint,
+
+<span class="cm">// Ctx impl:</span>
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+<span class="kw">fn</span> <span class="fn">index_address</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, address: &amp;AddressHash)
+    -&gt; Result&lt;BigUint, AddressRegistryError&gt;
+{
+    <span class="kw">let</span> counter = &amp;<span class="kw">mut</span> <span class="kw">self</span>.address_registry_counter;
+    <span class="kw">let</span> index = <span class="kw">self</span>.address_registry
+        .entry(address.clone())
+        .or_insert_with(|| {
+            <span class="kw">let</span> idx = counter.clone();
+            *counter += BigUint::from(1u32);
+            idx
+        })
+        .clone();
+    Ok(index)
+}
+
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+<span class="kw">fn</span> <span class="fn">get_address_index</span>(&amp;<span class="kw">self</span>, address: &amp;AddressHash)
+    -&gt; Result&lt;Option&lt;BigUint&gt;, AddressRegistryError&gt;
+{
+    Ok(<span class="kw">self</span>.address_registry.get(address).cloned())
+}</code></pre>
+
+  <h4>interpreter.rs &mdash; error variant (gated)</h4>
+<pre><code>#[cfg(feature = <span class="st">"address-registry"</span>)]
+#[error(<span class="st">"address registry error: {0}"</span>)]
+AddressRegistryError(#[from] AddressRegistryError),</code></pre>
+
+  <div class="commit-files">Files: <code>Cargo.toml</code>, <code>context.rs</code>, <code>interpreter.rs</code> (1 line). <strong>No kernel changes.</strong></div>
+
+  <div class="callout compiles">
+    <div class="callout-title">Why this compiles</div>
+    <ul>
+      <li><strong>Feature off (default)</strong>: none of this code exists. Zero impact on existing build.</li>
+      <li><strong>Feature on</strong>: <code>Ctx</code> implements the methods. Kernel doesn't need stubs because it doesn't enable the feature yet.</li>
+      <li><strong>Verify</strong>: <code>cargo build</code> (default) + <code>cargo build --features address-registry</code> + <code>cargo test --features address-registry</code></li>
+    </ul>
+  </div>
+
+  <h4>Tests (in context.rs or test module)</h4>
+  <ul>
+    <li>First address &rarr; <code>Ok(0)</code>, second &rarr; <code>Ok(1)</code></li>
+    <li>Same address twice &rarr; same <code>Ok(n)</code> (idempotency)</li>
+    <li>3 distinct addresses &rarr; 3 distinct consecutive indices</li>
+    <li><code>get_address_index</code> unregistered &rarr; <code>Ok(None)</code></li>
+    <li><code>get_address_index</code> registered &rarr; <code>Ok(Some(n))</code></li>
+    <li><strong>All address variants</strong>: tz1, KT1, sr1 &mdash; verify Hash/Eq correct per variant</li>
+    <li><strong>Zero address on fresh Ctx</strong>: <code>get_address_index(zero_addr)</code> &rarr; <code>Ok(None)</code> (documents D5 divergence from L1)</li>
+  </ul>
+
+  <div class="callout compiles">
+    <div class="callout-title">Definition of Done</div>
+<pre><code>cd contrib/mir
+cargo build                                  <span class="cm"># feature off: no change</span>
+cargo build --features address-registry      <span class="cm"># feature on: compiles</span>
+cargo test --features address-registry       <span class="cm"># 7 new tests pass</span>
+grep -rn 'cfg.*address.registry' src/        <span class="cm"># every new block is gated</span></code></pre>
+  </div>
+</div>
+
+<!-- COMMIT 2 -->
+<div class="commit">
+  <div class="commit-header">
+    <div class="commit-num">2</div>
+    <div class="commit-title">AST variants + typechecking rules + interpreter stubs</div>
+    <span class="badge p1">P1</span>
+  </div>
+
+  <p>These three changes are in one commit because they form a <strong>dependency triangle</strong>:</p>
+  <ul>
+    <li>Removing from <code>micheline_unsupported_instructions!</code> without typechecking rules &rarr; non-exhaustive match in typechecker (won't compile).</li>
+    <li>Adding <code>Instruction</code> variants without interpreter arms &rarr; non-exhaustive match in interpreter (won't compile).</li>
+  </ul>
+
+  <h4>ast.rs &mdash; add variants (gated)</h4>
+<pre><code>IsImplicitAccount,
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+IndexAddress,
+#[cfg(feature = <span class="st">"address-registry"</span>)]
+GetAddressIndex,
+TotalVotingPower,</code></pre>
+
+  <h4>ast/micheline.rs &mdash; conditional unsupported (see macro layering above)</h4>
+  <p>Move INDEX_ADDRESS/GET_ADDRESS_INDEX out of <code>micheline_unsupported_instructions_common!</code> into a conditional layer: unsupported when feature is off, handled by typechecker when on.</p>
+
+  <h4>typechecker.rs &mdash; add rules (gated, after IS_IMPLICIT_ACCOUNT)</h4>
+<pre><code><span class="cm">// All arms gated: #[cfg(feature = "address-registry")]</span>
+<span class="cm">// View restriction deferred (commit 8).</span>
+(App(INDEX_ADDRESS, [], _), [.., T::Address]) =&gt; {
+    stack[0] = T::Nat;
+    I::IndexAddress
+}
+(App(INDEX_ADDRESS, [], _), [.., _]) =&gt; no_overload!(INDEX_ADDRESS),
+(App(INDEX_ADDRESS, [], _), []) =&gt; no_overload!(INDEX_ADDRESS, len 1),
+(App(INDEX_ADDRESS, expect_args!(0), _), _) =&gt; unexpected_micheline!(),
+
+(App(GET_ADDRESS_INDEX, [], _), [.., T::Address]) =&gt; {
+    stack[0] = T::new_option(T::Nat);
+    I::GetAddressIndex
+}
+(App(GET_ADDRESS_INDEX, [], _), [.., _]) =&gt; no_overload!(GET_ADDRESS_INDEX),
+(App(GET_ADDRESS_INDEX, [], _), []) =&gt; no_overload!(GET_ADDRESS_INDEX, len 1),
+(App(GET_ADDRESS_INDEX, expect_args!(0), _), _) =&gt; unexpected_micheline!(),</code></pre>
+
+  <h4>interpreter.rs &mdash; stub arms (gated)</h4>
+<pre><code><span class="cm">// Gated: #[cfg(feature = "address-registry")]</span>
+I::IndexAddress =&gt; {
+    todo!(<span class="st">"commit 3: interpreter implementation"</span>)
+}
+I::GetAddressIndex =&gt; {
+    todo!(<span class="st">"commit 3: interpreter implementation"</span>)
+}</code></pre>
+  <p>These <code>todo!()</code> are <strong>internal to the feature flag</strong>: they only exist when <code>address-registry</code> is enabled. Replaced by real code in commit 3. Between commits 2 and 3, the <code>todo!()</code> is unreachable: typechecking tests call <code>typecheck_instruction()</code> (returns an <code>Instruction</code> value) but never <code>interpret()</code>.</p>
+  <p><strong>Verify</strong>: <code>cargo test --features address-registry</code> must pass at commit 2.</p>
+
+  <div class="commit-files">Files: <code>ast.rs</code>, <code>ast/micheline.rs</code>, <code>typechecker.rs</code>, <code>interpreter.rs</code></div>
+
+  <div class="callout compiles">
+    <div class="callout-title">Why this compiles &amp; tests pass</div>
+    <ul>
+      <li>Typechecker arms handle all <code>App(INDEX_ADDRESS/GET_ADDRESS_INDEX, ...)</code> patterns &mdash; exhaustive match restored.</li>
+      <li>Interpreter <code>todo!()</code> arms handle new <code>Instruction</code> variants &mdash; exhaustive match restored.</li>
+      <li><code>todo!()</code> is not reached: the typechecker <em>produces</em> these instructions, but no existing test invokes them yet. Typechecking tests below verify type-level behavior without running the interpreter.</li>
+    </ul>
+  </div>
+
+  <h4>Tests (in typechecker.rs #[test] module)</h4>
+  <ul>
+    <li><code>INDEX_ADDRESS</code> on <code>[Address]</code> &rarr; <code>Ok(IndexAddress)</code>, stack <code>[Nat]</code></li>
+    <li><code>GET_ADDRESS_INDEX</code> on <code>[Address]</code> &rarr; <code>Ok(GetAddressIndex)</code>, stack <code>[Option(Nat)]</code></li>
+    <li>Empty stack &rarr; <code>Err(NoMatchingOverload { ..., StackTooShort { expected: 1 } })</code></li>
+    <li>Wrong type <code>[Unit]</code> &rarr; <code>Err(NoMatchingOverload)</code></li>
+    <li><strong>Positive</strong>: a contract with <code>INDEX_ADDRESS</code> now typechecks (was <code>TodoInstr</code> without the feature)</li>
+  </ul>
+
+  <div class="callout compiles">
+    <div class="callout-title">Definition of Done</div>
+<pre><code>cd contrib/mir
+cargo build                                  <span class="cm"># feature off: no change</span>
+cargo build --features address-registry      <span class="cm"># feature on: compiles</span>
+cargo test --features address-registry       <span class="cm"># 5 new TC tests + 7 prev = all pass</span>
+cargo test                                   <span class="cm"># existing tests unaffected</span></code></pre>
+  </div>
+</div>
+
+<!-- COMMIT 3 -->
+<div class="commit">
+  <div class="commit-header">
+    <div class="commit-num">3</div>
+    <div class="commit-title">Interpreter + gas costs (replaces todo! from commit 2)</div>
+    <span class="badge p1">P1</span>
+  </div>
+
+  <h4>gas.rs &mdash; constants (NOT gated, follows BLS pattern)</h4>
+<pre><code><span class="cm">/// Source: proto_024 michelson_v1_gas_costs_generated.ml:1697</span>
+<span class="kw">pub const</span> INDEX_ADDRESS: u32 = 3480;
+<span class="cm">/// Source: proto_024 michelson_v1_gas_costs_generated.ml:1589</span>
+<span class="kw">pub const</span> GET_ADDRESS_INDEX: u32 = 530;</code></pre>
+  <p>BLS gas constants (<code>ADD_BLS_FR</code>, etc.) are not gated either &mdash; only the consuming code is. Same pattern here.</p>
+
+  <h4>interpreter.rs &mdash; replace todo! stubs (gated)</h4>
+<pre><code>I::IndexAddress =&gt; {
+    ctx.gas().consume(interpret_cost::INDEX_ADDRESS)?;
+    <span class="kw">let</span> addr = pop!(V::Address);
+    <span class="cm">// Invariant: entrypoint stripped.</span>
+    <span class="kw">let</span> index = ctx.index_address(&amp;addr.hash)?;
+    stack.push(TypedValue::Nat(index));
+}
+I::GetAddressIndex =&gt; {
+    ctx.gas().consume(interpret_cost::GET_ADDRESS_INDEX)?;
+    <span class="kw">let</span> addr = pop!(V::Address);
+    <span class="kw">let</span> result = ctx.get_address_index(&amp;addr.hash)?;
+    stack.push(TypedValue::new_option(result.map(TypedValue::Nat)));
+}</code></pre>
+
+  <div class="commit-files">Files: <code>gas.rs</code>, <code>interpreter.rs</code></div>
+
+  <div class="callout compiles">
+    <div class="callout-title">Feature fully functional after this commit</div>
+    <p>INDEX_ADDRESS and GET_ADDRESS_INDEX work end-to-end in MIR with the in-memory <code>Ctx</code>. Zero <code>todo!()</code> remaining in <code>contrib/mir/</code>.</p>
+  </div>
+
+  <h4>Tests (in interpreter.rs #[test] module, run with <code>--features address-registry</code>)</h4>
+  <ul>
+    <li><strong>Basic</strong>: <code>{ INDEX_ADDRESS }</code> with address &rarr; nat on stack</li>
+    <li><strong>Idempotency</strong>: same address twice &rarr; same nat</li>
+    <li><strong>Distinct</strong>: 3 addresses &rarr; 3 different nats (0, 1, 2)</li>
+    <li><strong>Entrypoint stripping</strong>: Address with entrypoint "do" and "default", same KT1 &rarr; same index</li>
+    <li><strong>sr1</strong>: smart rollup address works</li>
+    <li><strong>GET unregistered</strong>: &rarr; <code>None</code></li>
+    <li><strong>GET registered</strong>: INDEX then GET &rarr; <code>Some(n)</code></li>
+    <li><strong>Sequence</strong>: INDEX(A), INDEX(B), GET(A), GET(B), GET(C) &rarr; <code>Some(0), Some(1), None</code></li>
+    <li><strong>All variants</strong>: tz1, tz2, tz3, KT1, sr1 &mdash; each gets a distinct index</li>
+    <li><strong>Cross-variant</strong>: KT1 and tz1 with same raw hash &rarr; different index (tag prefix differs)</li>
+    <li><strong>Out of gas</strong>: set gas to 1 milligas, call INDEX_ADDRESS &rarr; <code>OutOfGas</code>, stack unchanged</li>
+  </ul>
+
+  <div class="callout compiles">
+    <div class="callout-title">Definition of Done</div>
+<pre><code>cd contrib/mir
+cargo build                                  <span class="cm"># feature off: no change</span>
+cargo build --features address-registry      <span class="cm"># compiles, zero todo!()</span>
+cargo test --features address-registry       <span class="cm"># 11 new + prev = all pass</span>
+grep -rn 'todo!' src/interpreter.rs          <span class="cm"># zero results for address-registry</span></code></pre>
+  </div>
+</div>
+
+<!-- COMMIT 4 -->
+<div class="commit">
+  <div class="commit-header">
+    <div class="commit-num">4</div>
+    <div class="commit-title">TZT test cases</div>
+    <span class="badge p1">P1</span>
+  </div>
+
+<pre><code><span class="cm"># INDEX_ADDRESS on tz1 address</span>
+code { INDEX_ADDRESS } ;
+input { Stack_elt address <span class="st">"tz1N2y21z6M4aBaCbaZXYKDz4xHsWY4MbFMg"</span> } ;
+output { Stack_elt nat 0 }
+
+<span class="cm"># GET_ADDRESS_INDEX on unregistered address</span>
+code { GET_ADDRESS_INDEX } ;
+input { Stack_elt address <span class="st">"KT1BEqzn5Wx8uJrZNvuS9DVHmLvG9td3fDLi"</span> } ;
+output { Stack_elt (option nat) None }
+
+<span class="cm"># INDEX then GET in same execution</span>
+code { DUP ; INDEX_ADDRESS ; SWAP ; GET_ADDRESS_INDEX } ;
+input { Stack_elt address <span class="st">"tz1N2y21z6M4aBaCbaZXYKDz4xHsWY4MbFMg"</span> } ;
+output { Stack_elt (option nat) (Some 0) ; Stack_elt nat 0 }</code></pre>
+
+  <div class="commit-files">Files: new TZT test data files</div>
+  <div class="callout compiles">
+    <div class="callout-title">Definition of Done</div>
+<pre><code>cd contrib/mir
+cargo run --features address-registry \
+  --bin tzt_runner -- &lt;tzt_file&gt;             <span class="cm"># each TZT file passes</span>
+cargo test --features address-registry       <span class="cm"># all tests pass</span></code></pre>
+  </div>
+</div>
+
+<!-- COMMIT 5 -->
+<div class="commit">
+  <div class="commit-header">
+    <div class="commit-num">5</div>
+    <div class="commit-title">Combined contract test (both instructions together)</div>
+    <span class="badge p1">P1</span>
+  </div>
+
+<pre><code><span class="cm">// Contract that indexes an address and queries it in the same call:</span>
+{ parameter address ;
+  storage (pair nat (option nat)) ;
+  code { CAR ; DUP ; INDEX_ADDRESS ; SWAP ;
+         GET_ADDRESS_INDEX ; PAIR ; NIL operation ; PAIR } }
+
+<span class="cm">// Assert: call with tz1abc -> storage = (Pair 0 (Some 0))</span>
+<span class="cm">// INDEX returns 0 (first registration), GET returns Some(0).</span></code></pre>
+
+  <div class="commit-files">Files: test file in <code>contrib/mir/</code></div>
+  <div class="callout compiles">
+    <div class="callout-title">Definition of Done</div>
+<pre><code>cd contrib/mir
+cargo test --features address-registry       <span class="cm"># contract test passes</span></code></pre>
+    <p>After this commit, Phase 1 is complete. <code>cargo test --features address-registry</code> runs all 23+ tests for the feature.</p>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="phase2">Phase 2: Kernel Integration</h2>
+
+<div class="phase-header">
+  <h3><span class="badge p2">Phase 2</span> <code>etherlink/kernel_latest/</code> &mdash; commits 6-7</h3>
+  <p>Enables feature flag in kernel. Implements durable storage backend. E2E test.</p>
+</div>
+
+<!-- COMMIT 7 -->
+<div class="commit">
+  <div class="commit-header">
+    <div class="commit-num">6</div>
+    <div class="commit-title">Kernel: enable feature flag + durable storage impl</div>
+    <span class="badge p2">P2</span>
+  </div>
+
+  <h4>Cargo.toml &mdash; enable feature flag</h4>
+<pre><code>mir = { path = <span class="st">"../../contrib/mir"</span>, default-features = <span class="kw">false</span>,
+        features = [<span class="st">"allow_lazy_storage_transfer"</span>, <span class="st">"address-registry"</span>] }</code></pre>
+
+  <h4>Path helpers (new, in <code>context.rs</code> or <code>address_registry.rs</code>)</h4>
+  <p>Follow the exact pattern of big_map path construction (<code>context.rs:140-202</code>):</p>
+<pre><code><span class="kw">use</span> tezos_smart_rollup_host::path::{concat, OwnedPath, RefPath};
+
+<span class="kw">const</span> REGISTRY_PATH: RefPath = RefPath::assert_from(b<span class="st">"/address_registry"</span>);
+<span class="kw">const</span> COUNTER_PATH: RefPath = RefPath::assert_from(b<span class="st">"/counter"</span>);
+
+<span class="cm">// Follows big_map root() pattern: context.path() + constant segment</span>
+<span class="kw">fn</span> <span class="fn">registry_root</span>&lt;C: Context&gt;(ctx: &amp;C) -&gt; Result&lt;OwnedPath, PathError&gt; {
+    concat(&amp;ctx.path(), &amp;REGISTRY_PATH)
+}
+
+<span class="kw">fn</span> <span class="fn">registry_counter_path</span>&lt;C: Context&gt;(ctx: &amp;C) -&gt; Result&lt;OwnedPath, PathError&gt; {
+    concat(&amp;registry_root(ctx)?, &amp;COUNTER_PATH)
+}
+
+<span class="cm">// Follows value_path() pattern: hex-encoded hash as path segment</span>
+<span class="kw">fn</span> <span class="fn">registry_entry_path</span>&lt;C: Context&gt;(ctx: &amp;C, addr: &amp;AddressHash)
+    -&gt; Result&lt;OwnedPath, PathError&gt;
+{
+    <span class="kw">let</span> addr_hex = hex::encode(addr.to_bytes_vec());
+    concat(&amp;registry_root(ctx)?, &amp;OwnedPath::try_from(format!(<span class="st">"/{addr_hex}"</span>))?)
+}</code></pre>
+
+  <h4>mir_ctx.rs &mdash; Ctx&lt;Host&gt; implementation</h4>
+  <p>Encoding: use <code>Narith</code> (newtype around <code>BigUint</code> with <code>BinWriter</code>/<code>NomReader</code>). Same pattern as <code>BigMapId</code> in <code>generate_id()</code> (line 373).</p>
+<pre><code><span class="kw">use</span> tezos_data_encoding::types::Narith;
+<span class="kw">use</span> tezos_storage::{read_nom_value, store_bin};
+
+<span class="kw">fn</span> <span class="fn">index_address</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, address: &amp;AddressHash)
+    -&gt; Result&lt;BigUint, AddressRegistryError&gt;
+{
+    <span class="kw">let</span> entry_path = registry_entry_path(<span class="kw">self</span>.tc_ctx.context, address)
+        .map_err(|e| AddressRegistryError::Other(e.to_string()))?;
+
+    <span class="cm">// Invariant: distinguish PathNotFound from I/O errors.</span>
+    <span class="cm">// Swallowing non-PathNotFound would cause duplicate registrations.</span>
+    <span class="kw">match</span> <span class="kw">self</span>.tc_ctx.host.store_has(&amp;entry_path) {
+        Ok(Some(_)) =&gt; {
+            <span class="kw">let</span> n: Narith = read_nom_value(<span class="kw">self</span>.tc_ctx.host, &amp;entry_path)
+                .map_err(|e| AddressRegistryError::Other(e.to_string()))?;
+            <span class="kw">return</span> Ok(n.0);
+        }
+        Ok(None) =&gt; {}
+        Err(e) =&gt; <span class="kw">return</span> Err(AddressRegistryError::Other(e.to_string())),
+    }
+
+    <span class="cm">// Follows generate_id() pattern (line 373): read counter, write, increment</span>
+    <span class="kw">let</span> counter_path = registry_counter_path(<span class="kw">self</span>.tc_ctx.context)
+        .map_err(|e| AddressRegistryError::Other(e.to_string()))?;
+    <span class="kw">let</span> counter: BigUint = read_nom_value::&lt;Narith&gt;(<span class="kw">self</span>.tc_ctx.host, &amp;counter_path)
+        .map(|n| n.0)
+        .unwrap_or_else(|_| BigUint::from(0u32));
+    store_bin(&amp;Narith(counter.clone()), <span class="kw">self</span>.tc_ctx.host, &amp;entry_path)
+        .map_err(|e| AddressRegistryError::Other(e.to_string()))?;
+    store_bin(&amp;Narith(&amp;counter + 1u32), <span class="kw">self</span>.tc_ctx.host, &amp;counter_path)
+        .map_err(|e| AddressRegistryError::Other(e.to_string()))?;
+    Ok(counter)
+}
+
+<span class="kw">fn</span> <span class="fn">get_address_index</span>(&amp;<span class="kw">self</span>, address: &amp;AddressHash)
+    -&gt; Result&lt;Option&lt;BigUint&gt;, AddressRegistryError&gt;
+{
+    <span class="kw">let</span> entry_path = registry_entry_path(<span class="kw">self</span>.tc_ctx.context, address)
+        .map_err(|e| AddressRegistryError::Other(e.to_string()))?;
+    <span class="kw">match</span> <span class="kw">self</span>.tc_ctx.host.store_has(&amp;entry_path) {
+        Ok(Some(_)) =&gt; {
+            <span class="kw">let</span> n: Narith = read_nom_value(<span class="kw">self</span>.tc_ctx.host, &amp;entry_path)
+                .map_err(|e| AddressRegistryError::Other(e.to_string()))?;
+            Ok(Some(n.0))
+        }
+        Ok(None) =&gt; Ok(None),
+        Err(e) =&gt; Err(AddressRegistryError::Other(e.to_string())),
+    }
+}</code></pre>
+
+  <h4>MockCtx &mdash; in-memory HashMap (same as MIR Ctx)</h4>
+
+  <div class="commit-files">Files: <code>tezos_execution/src/mir_ctx.rs</code> (or new <code>address_registry.rs</code>), <code>tezos_execution/src/context.rs</code>, <code>kernel_latest/Cargo.toml</code></div>
+
+  <div class="callout compiles">
+    <div class="callout-title">Definition of Done</div>
+<pre><code>cd etherlink/kernel_latest
+cargo build                                  <span class="cm"># kernel compiles with FF on</span>
+cargo test                                   <span class="cm"># MockCtx tests pass</span>
+
+cd contrib/mir
+cargo build                                  <span class="cm"># MIR still compiles standalone</span>
+cargo test --features address-registry       <span class="cm"># MIR tests still pass</span></code></pre>
+    <p>Compiler forces <code>Ctx&lt;Host&gt;</code> and <code>MockCtx</code> to implement the new methods. If any method is missing, compilation fails.</p>
+  </div>
+</div>
+
+<!-- COMMIT 8 -->
+<div class="commit">
+  <div class="commit-header">
+    <div class="commit-num">7</div>
+    <div class="commit-title">E2E: deterministic address registry scenario</div>
+    <span class="badge p2">P2</span>
+  </div>
+
+  <p>L1 sandbox test using Protocol T024 (Tallinn). Confirmed available: <code>Protocol.T024</code> in <code>tezt/lib_tezos/protocol.ml</code>.</p>
+
+  <h4>Test structure (follows <code>contract_mini_scenarios.ml</code> pattern)</h4>
+<pre><code><span class="kw">let</span> register ~protocols =
+  Protocol.register_test
+    ~__FILE__
+    ~title:<span class="st">"Address registry E2E"</span>
+    ~tags:[<span class="st">"layer1"</span>; <span class="st">"michelson"</span>; <span class="st">"address_registry"</span>]
+  @@ <span class="kw">fun</span> protocol -&gt;
+  <span class="kw">let*</span> node = Node.init [History_mode Archive] <span class="kw">in</span>
+  <span class="kw">let*</span> client = Client.init ~endpoint:(Node node) () <span class="kw">in</span>
+  <span class="kw">let*</span> () = Client.activate_protocol_and_wait ~protocol client <span class="kw">in</span>
+
+  <span class="cm">(* --- Deploy index_address contract ---</span>
+  <span class="cm">   { parameter address ; storage (option nat) ;</span>
+  <span class="cm">     code { CAR ; INDEX_ADDRESS ; SOME ; NIL operation ; PAIR } } *)</span>
+  <span class="kw">let*</span> _alias, indexer =
+    Client.originate_contract_at ~amount:Tez.zero
+      ~src:Constant.bootstrap1.alias ~init:<span class="st">"None"</span>
+      ~burn_cap:Tez.one client
+      [<span class="st">"mini_scenarios"</span>; <span class="st">"index_address"</span>] protocol <span class="kw">in</span>
+  <span class="kw">let*</span> () = Client.bake_for_and_wait client <span class="kw">in</span>
+
+  <span class="cm">(* --- Step 1: Index bootstrap1 ---)</span>
+  <span class="kw">let*</span> () = Client.transfer ~amount:Tez.zero
+    ~giver:<span class="st">"bootstrap1"</span> ~receiver:indexer
+    ~arg:(sf {|"%s"|} Constant.bootstrap1.public_key_hash)
+    ~burn_cap:(Tez.of_int 10) client <span class="kw">in</span>
+  <span class="kw">let*</span> () = Client.bake_for_and_wait client <span class="kw">in</span>
+  <span class="cm">(* Check: storage = Some(N) where N is the first index assigned *)</span>
+  <span class="kw">let*</span> storage = Client.contract_storage indexer client <span class="kw">in</span>
+  <span class="cm">(* ... assert (String.trim storage = "Some N") ... *)</span>
+
+  <span class="cm">(* --- Step 2: Idempotency — same address again ---)</span>
+  <span class="cm">(* ... assert same index returned ... *)</span>
+
+  <span class="cm">(* --- Step 3: Different address — distinct index ---)</span>
+  <span class="cm">(* ... bootstrap2 → index N+1 ... *)</span>
+
+  <span class="cm">(* --- Step 4: Cross-block — bake, then GET_ADDRESS_INDEX ---)</span>
+  <span class="cm">(* Deploy getter contract, call with bootstrap1, assert Some(N) *)</span>
+
+  <span class="cm">(* --- Step 5: Failure — INDEX then FAILWITH in internal call ---)</span>
+  <span class="cm">(* Use ~force:true, bake, check operation status = "failed",</span>
+  <span class="cm">   then verify parent's registry entry persists *)</span>
+
+  unit</code></pre>
+
+  <h4>Michelson test scripts</h4>
+  <p>Add to <code>michelson_test_scripts/mini_scenarios/</code>:</p>
+  <ul>
+    <li><code>index_address.tz</code> &mdash; already exists in proto_024 tests, can reuse</li>
+    <li><code>get_address_index.tz</code> &mdash; getter contract</li>
+    <li><code>index_then_fail.tz</code> &mdash; indexes, then calls a contract that FAILWITHs</li>
+  </ul>
+
+  <h4>Assertions</h4>
+  <table>
+    <thead><tr><th>Step</th><th>Method</th><th>Assertion</th></tr></thead>
+    <tbody>
+      <tr><td>Index bootstrap1</td><td><code>Client.contract_storage</code></td><td>Storage = <code>(Some N)</code></td></tr>
+      <tr><td>Idempotency</td><td><code>Client.contract_storage</code></td><td>Same N</td></tr>
+      <tr><td>Index bootstrap2</td><td><code>Client.contract_storage</code></td><td>N+1</td></tr>
+      <tr><td>Cross-block GET</td><td><code>Client.contract_storage</code></td><td>Persists after baking</td></tr>
+      <tr><td>Failure scenario</td><td>Receipt: <code>status = "failed"</code></td><td>Parent's index persists</td></tr>
+      <tr><td>Gas</td><td><code>consumed_milligas</code> in receipt</td><td>~3480 for INDEX</td></tr>
+    </tbody>
+  </table>
+
+  <div class="commit-files">Files: <code>tezt/tests/address_registry.ml</code>, <code>michelson_test_scripts/mini_scenarios/index_address.tz</code> + <code>get_address_index.tz</code></div>
+
+  <div class="callout compiles">
+    <div class="callout-title">Definition of Done &mdash; CI</div>
+<pre><code><span class="cm"># Local smoke test:</span>
+make build-tezt
+dune exec tezt/tests/main.exe -- \
+  --file address_registry.ml -v             <span class="cm"># E2E scenario passes</span>
+
+<span class="cm"># CI validation (full):</span>
+<span class="cm"># Push branch, let CI run the Tezt suite with T024 protocol.</span>
+<span class="cm"># All 6 assertions must pass (index, idempotency, distinct,</span>
+<span class="cm"># cross-block, failure, gas).</span></code></pre>
+    <p>This is the only commit validated by CI. All previous commits are verified locally with <code>cargo build</code> + <code>cargo test</code>.</p>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="bonus">Bonus: View Restriction</h2>
+
+<div class="phase-header">
+  <h3><span class="badge bonus">Bonus</span> Post-POC &mdash; commit 8</h3>
+</div>
+
+<div class="commit">
+  <div class="commit-header">
+    <div class="commit-num">8</div>
+    <div class="commit-title">TypecheckMode + view restrictions for INDEX_ADDRESS</div>
+    <span class="badge bonus">Bonus</span>
+  </div>
+
+  <p>Add <code>TypecheckMode { Toplevel, View, Lambda }</code>. Thread through <code>typecheck()</code> and <code>typecheck_instruction()</code>. Forbid <code>INDEX_ADDRESS</code>, <code>TRANSFER_TOKENS</code>, <code>SET_DELEGATE</code>, <code>CREATE_CONTRACT</code> in view bodies. Allow inside lambdas within views (OCaml <code>check_not_in_view</code> with <code>in_lambda</code>).</p>
+
+  <div class="commit-files">Files: <code>typechecker.rs</code> (significant signature refactor)</div>
+  <h4>Tests</h4>
+  <ul>
+    <li>INDEX_ADDRESS in view body &rarr; error</li>
+    <li>INDEX_ADDRESS in LAMBDA within view &rarr; ok</li>
+    <li>GET_ADDRESS_INDEX in view &rarr; ok (read-only)</li>
+    <li>TRANSFER_TOKENS in view &rarr; error (pre-existing gap now fixed)</li>
+  </ul>
+
+  <div class="callout compiles">
+    <div class="callout-title">Definition of Done</div>
+<pre><code>cd contrib/mir
+cargo build --features address-registry      <span class="cm"># compiles</span>
+cargo test --features address-registry       <span class="cm"># 4 new view tests + all prev pass</span></code></pre>
+  </div>
+</div>
+
+<!-- Summary -->
+<h2>Summary</h2>
+
+<table>
+  <thead><tr><th>Commit</th><th>Phase</th><th>What</th><th>Files</th><th>Feature flag</th><th>Tests</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><span class="badge p1">P1</span></td><td>FF + CtxTrait + Ctx impl + error type</td><td>Cargo.toml, context.rs, interpreter.rs</td><td>Defined (not default)</td><td>7 unit tests</td></tr>
+    <tr><td>2</td><td><span class="badge p1">P1</span></td><td>AST + typechecking + interpreter todo!</td><td>ast.rs, micheline.rs, typechecker.rs, interpreter.rs</td><td>All gated</td><td>5 TC tests</td></tr>
+    <tr><td>3</td><td><span class="badge p1">P1</span></td><td>Interpreter + gas (replaces todo!)</td><td>gas.rs, interpreter.rs</td><td>Interp gated, gas not</td><td>11 interp tests</td></tr>
+    <tr><td>4</td><td><span class="badge p1">P1</span></td><td>TZT tests</td><td>tzt data</td><td>Run with --features</td><td>3+ TZT cases</td></tr>
+    <tr><td>5</td><td><span class="badge p1">P1</span></td><td>Combined contract test</td><td>test file</td><td>Run with --features</td><td>1 contract test</td></tr>
+    <tr><td>6</td><td><span class="badge p2">P2</span></td><td>Kernel: enable FF + implement</td><td>mir_ctx.rs, Cargo.toml</td><td>Activated</td><td>MockCtx tests</td></tr>
+    <tr><td>7</td><td><span class="badge p2">P2</span></td><td>E2E test</td><td>tezt test</td><td>&mdash;</td><td>E2E scenario</td></tr>
+    <tr><td>8</td><td><span class="badge bonus">Bonus</span></td><td>View restriction</td><td>typechecker.rs</td><td>Gated</td><td>4 view tests</td></tr>
+  </tbody>
+</table>
+
+<p style="margin-top: 1rem; color: var(--text-muted); font-size: 0.9rem;">
+  <strong>Verify at any commit</strong>: <code>cargo build</code> (default, feature off &mdash; no change) + <code>cargo build --features address-registry</code> (feature on). <br>
+  <strong>Grep</strong>: <code>grep -rn 'cfg.*address.registry' contrib/mir/src/</code> lists every gated block.
+</p>
+
+</div><!-- .container -->
+</body>
+</html>
