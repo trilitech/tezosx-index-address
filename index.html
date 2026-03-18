@@ -768,27 +768,86 @@ dune exec tezt/tests/main.exe -- \
 
 <div class="commit">
   <div class="commit-header">
-    <div class="commit-num">8</div>
-    <div class="commit-title">TypecheckMode + view restrictions for INDEX_ADDRESS</div>
+    <div class="commit-num">B</div>
+    <div class="commit-title">MIR: enforce view restrictions for side-effectful instructions</div>
     <span class="badge bonus">Bonus</span>
   </div>
 
-  <p>Add <code>TypecheckMode { Toplevel, View, Lambda }</code>. Thread through <code>typecheck()</code> and <code>typecheck_instruction()</code>. Forbid <code>INDEX_ADDRESS</code>, <code>TRANSFER_TOKENS</code>, <code>SET_DELEGATE</code>, <code>CREATE_CONTRACT</code> in view bodies. Allow inside lambdas within views (OCaml <code>check_not_in_view</code> with <code>in_lambda</code>).</p>
+  <p>This is a <strong>general MIR fix</strong>, not specific to the address registry. It fixes a pre-existing divergence where MIR allows side-effectful instructions in view bodies, while the OCaml protocol forbids them.</p>
 
-  <div class="commit-files">Files: <code>typechecker.rs</code> (significant signature refactor)</div>
-  <h4>Tests</h4>
-  <ul>
-    <li>INDEX_ADDRESS in view body &rarr; error</li>
-    <li>INDEX_ADDRESS in LAMBDA within view &rarr; ok</li>
-    <li>GET_ADDRESS_INDEX in view &rarr; ok (read-only)</li>
-    <li>TRANSFER_TOKENS in view &rarr; error (pre-existing gap now fixed)</li>
-  </ul>
+  <h3>Scope</h3>
+  <p>Forbid in view bodies: <code>INDEX_ADDRESS</code>, <code>TRANSFER_TOKENS</code>, <code>SET_DELEGATE</code>, <code>CREATE_CONTRACT</code>. Allow everywhere else. <code>GET_ADDRESS_INDEX</code> is read-only and allowed in views.</p>
+
+  <h3>Implementation</h3>
+
+  <h4>1. Add <code>in_view: bool</code> to <code>typecheck()</code> and <code>typecheck_instruction()</code></h4>
+  <p>Simpler than a full <code>TypecheckMode</code> enum. A boolean is sufficient because we only need two states: "in a view body" vs "not". The <code>LAMBDA</code> case resets it to <code>false</code> (lambdas in views are allowed to contain forbidden instructions — they could be returned and executed elsewhere).</p>
+
+<pre><code><span class="cm">// Current:</span>
+<span class="kw">fn</span> <span class="fn">typecheck</span>(ast, gas, self_entrypoints, opt_stack)
+<span class="kw">fn</span> <span class="fn">typecheck_instruction</span>(i, gas, self_entrypoints, opt_stack)
+
+<span class="cm">// After:</span>
+<span class="kw">fn</span> <span class="fn">typecheck</span>(ast, gas, self_entrypoints, opt_stack, in_view: <span class="ty">bool</span>)
+<span class="kw">fn</span> <span class="fn">typecheck_instruction</span>(i, gas, self_entrypoints, opt_stack, in_view: <span class="ty">bool</span>)</code></pre>
+
+  <h4>2. Call sites</h4>
+  <table>
+    <thead><tr><th>Call site</th><th><code>in_view</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>typecheck_script</code> (contract code)</td><td><code>false</code></td></tr>
+      <tr><td><code>typecheck_script</code> (view bodies, line 313)</td><td><code>true</code></td></tr>
+      <tr><td><code>typecheck_lambda</code> (LAMBDA/LAMBDA_REC)</td><td><code>false</code> (reset)</td></tr>
+      <tr><td>Recursive calls in <code>typecheck_instruction</code> (IF, LOOP, etc.)</td><td>Pass through</td></tr>
+    </tbody>
+  </table>
+
+  <h4>3. New error variant</h4>
+<pre><code><span class="kw">pub enum</span> <span class="ty">TcError</span> {
+    <span class="cm">// ...</span>
+    ForbiddenInView(<span class="ty">Prim</span>),
+}</code></pre>
+
+  <h4>4. Check in <code>typecheck_instruction</code></h4>
+<pre><code><span class="cm">// At each forbidden instruction's match arm:</span>
+(App(TRANSFER_TOKENS, ..), ..) <span class="kw">if</span> in_view =&gt; {
+    Err(TcError::ForbiddenInView(Prim::TRANSFER_TOKENS))?
+}
+<span class="cm">// Same for SET_DELEGATE, CREATE_CONTRACT, INDEX_ADDRESS</span></code></pre>
+
+  <h3>Tests</h3>
+  <p>All tests are typechecker-level: parse a contract script with views, typecheck, assert success or <code>ForbiddenInView</code> error. Tests do NOT execute (avoids <a href="https://linear.app/tezos/issue/L2-1047">L2-1047</a> where view context is not updated at runtime).</p>
+
+  <table>
+    <thead><tr><th>Test</th><th>Expected</th><th>What it catches</th></tr></thead>
+    <tbody>
+      <tr><td colspan="3"><strong>Forbidden instructions — direct in view body</strong></td></tr>
+      <tr><td><code>view "v" unit unit { DROP; PUSH address "..."; INDEX_ADDRESS }</code></td><td><code>ForbiddenInView(INDEX_ADDRESS)</code></td><td>INDEX_ADDRESS rejected in view</td></tr>
+      <tr><td><code>view "v" unit (list operation) { DROP; UNIT; NIL operation; TRANSFER_TOKENS }</code></td><td><code>ForbiddenInView(TRANSFER_TOKENS)</code></td><td>Pre-existing divergence fixed</td></tr>
+      <tr><td><code>view "v" unit (option key_hash) { DROP; NONE key_hash; SET_DELEGATE }</code></td><td><code>ForbiddenInView(SET_DELEGATE)</code></td><td>Pre-existing divergence fixed</td></tr>
+      <tr><td><code>view "v" unit operation { DROP; ...; CREATE_CONTRACT { ... } }</code></td><td><code>ForbiddenInView(CREATE_CONTRACT)</code></td><td>Pre-existing divergence fixed</td></tr>
+      <tr><td colspan="3"><strong>Allowed instructions in view body</strong></td></tr>
+      <tr><td><code>view "v" address (option nat) { CAR; GET_ADDRESS_INDEX }</code></td><td>Ok</td><td>Read-only instruction allowed</td></tr>
+      <tr><td><code>view "v" unit nat { DROP; BALANCE }</code></td><td>Ok</td><td>Pure context reads allowed</td></tr>
+      <tr><td><code>view "v" unit nat { DROP; AMOUNT }</code></td><td>Ok</td><td>Pure context reads allowed</td></tr>
+      <tr><td colspan="3"><strong>Lambda escape hatch — forbidden in view BUT allowed inside lambda</strong></td></tr>
+      <tr><td><code>view "v" unit (lambda unit nat) { DROP; LAMBDA unit nat { DROP; PUSH address "..."; INDEX_ADDRESS } }</code></td><td>Ok</td><td>Lambda resets view restriction</td></tr>
+      <tr><td><code>view "v" unit (lambda unit (list operation)) { DROP; LAMBDA unit (list operation) { ...; TRANSFER_TOKENS } }</code></td><td>Ok</td><td>Lambda escape works for all forbidden instrs</td></tr>
+      <tr><td colspan="3"><strong>Toplevel — not affected</strong></td></tr>
+      <tr><td><code>code { ...; INDEX_ADDRESS; ... }</code> (no view)</td><td>Ok</td><td>Non-view code unaffected by the change</td></tr>
+      <tr><td><code>code { ...; TRANSFER_TOKENS; ... }</code> (no view)</td><td>Ok</td><td>Non-view code unaffected</td></tr>
+      <tr><td colspan="3"><strong>Nested — forbidden in nested control flow inside view</strong></td></tr>
+      <tr><td><code>view "v" bool unit { CAR; IF { INDEX_ADDRESS; DROP } { PUSH nat 0 }; DROP }</code></td><td><code>ForbiddenInView(INDEX_ADDRESS)</code></td><td><code>in_view</code> propagates through IF</td></tr>
+      <tr><td><code>view "v" (list address) unit { CAR; ITER { INDEX_ADDRESS; DROP } }</code></td><td><code>ForbiddenInView(INDEX_ADDRESS)</code></td><td><code>in_view</code> propagates through ITER</td></tr>
+    </tbody>
+  </table>
 
   <div class="callout compiles">
     <div class="callout-title">Definition of Done</div>
 <pre><code>cd contrib/mir
-cargo build --features address-registry      <span class="cm"># compiles</span>
-cargo test --features address-registry       <span class="cm"># 4 new view tests + all prev pass</span></code></pre>
+cargo build --features address-registry
+cargo test --features address-registry       <span class="cm"># 14 new view tests + all prev pass</span>
+cargo test                                   <span class="cm"># existing tests unaffected (in_view=false everywhere)</span></code></pre>
   </div>
 </div>
 
