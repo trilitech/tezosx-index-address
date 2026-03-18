@@ -101,8 +101,9 @@
   </ol>
 
   <h4>Where the check happens</h4>
-  <p>At the kernel <code>CtxTrait</code> implementation (<code>mir_ctx.rs</code>). <code>index_address()</code> and <code>get_address_index()</code> return an error if the flag is off. The MIR typechecker and interpreter are unaware of the flag &mdash; they always support the instructions.</p>
-  <p>A contract using INDEX_ADDRESS can be originated even if the flag is off. Calling it returns an error. When the flag is turned on, existing contracts start working.</p>
+  <p>At <strong>typechecking time</strong>, in the MIR typechecker. <code>typecheck_script</code> receives an <code>allow_address_indexing: bool</code> parameter. When <code>false</code>, INDEX_ADDRESS and GET_ADDRESS_INDEX are rejected with a typechecking error &mdash; origination fails, exactly as before the feature was implemented (no regression).</p>
+  <p>The kernel reads <code>ExperimentalFeatures::is_address_indexing_enabled()</code> once at boot and passes the flag to every <code>typecheck_script</code> call (origination + execution). When the flag is turned on, contracts using these instructions can be originated and executed.</p>
+  <p>No check is needed in <code>mir_ctx.rs</code> (<code>index_address</code>/<code>get_address_index</code>) because the typechecker blocks upstream.</p>
 </div>
 
 <!-- ================================================================ -->
@@ -853,12 +854,12 @@ cargo test                                   <span class="cm"># existing tests u
 <table>
   <thead><tr><th>Commit</th><th>Phase</th><th>What</th><th>Files</th><th>Feature flag</th><th>Tests</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td><span class="badge p2">P2</span></td><td>Kernel: dynamic feature flag infrastructure</td><td>storage.rs, chains.rs</td><td></td><td>Compiles</td></tr>
+    <tr><td>1</td><td><span class="badge p2">P2</span></td><td>Kernel: dynamic FF infrastructure</td><td>storage.rs, chains.rs</td><td></td><td>Compiles</td></tr>
     <tr><td>2</td><td><span class="badge p1">P1</span></td><td>MIR: CtxTrait + Ctx impl + error type</td><td>context.rs, interpreter.rs</td><td></td><td>7 context tests</td></tr>
-    <tr><td>3</td><td><span class="badge p1">P1</span></td><td>MIR: AST + typechecking + interpreter todo!</td><td>ast.rs, micheline.rs, typechecker.rs, interpreter.rs</td><td></td><td>2 TC tests</td></tr>
+    <tr><td>3</td><td><span class="badge p1">P1</span></td><td>MIR: AST + typechecking (with FF param) + interpreter stubs</td><td>ast.rs, micheline.rs, typechecker.rs, interpreter.rs</td><td></td><td>2 TC tests</td></tr>
     <tr><td>4</td><td><span class="badge p1">P1</span></td><td>MIR: interpreter + gas</td><td>gas.rs, interpreter.rs</td><td></td><td>19 interp tests</td></tr>
     <tr><td>5</td><td><span class="badge p1">P1</span></td><td>MIR: TZT tests</td><td>tzt data</td><td></td><td>10 TZT</td></tr>
-    <tr><td>6</td><td><span class="badge p2">P2</span></td><td>Kernel: durable storage impl + FF check</td><td>mir_ctx.rs</td><td></td><td>Compiles</td></tr>
+    <tr><td>6</td><td><span class="badge p2">P2</span></td><td>Kernel: durable storage impl + pass FF to typechecker</td><td>mir_ctx.rs, lib.rs</td><td></td><td>Compiles</td></tr>
     <tr><td>7</td><td><span class="badge p2">P2</span></td><td>E2E test</td><td>tezosx.ml</td><td></td><td>Validated manually</td></tr>
   </tbody>
 </table>
