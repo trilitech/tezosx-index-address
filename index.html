@@ -82,50 +82,45 @@
 </nav>
 
 <!-- ================================================================ -->
-<h2 id="constraint">Compilation Constraint &amp; Feature Flag</h2>
-
-<div class="callout compiles">
-  <div class="callout-title">Non-negotiable: every commit compiles and existing tests pass</div>
-  <p>All new code is behind <code>#[cfg(feature = "address-registry")]</code>. When the feature is <strong>disabled</strong> (default), the code doesn't exist &mdash; zero risk. When <strong>enabled</strong>, all pieces must be consistent.</p>
-</div>
+<h2 id="constraint">Feature Flags: Static &amp; Dynamic</h2>
 
 <div class="callout rationale">
-  <div class="callout-title">Feature flag: <code>address-registry</code></div>
-  <p>Follows the existing <code>bls</code> pattern (used in 10 files). All address registry code is gated behind this flag:</p>
-  <ul>
-    <li><code>CtxTrait</code> methods &mdash; only exist when feature is on</li>
-    <li><code>Instruction</code> variants &mdash; only exist when feature is on</li>
-    <li>Typechecker/interpreter arms &mdash; only exist when feature is on</li>
-    <li>Unsupported macro &mdash; includes INDEX_ADDRESS/GET_ADDRESS_INDEX when feature is <strong>off</strong> (same pattern as PAIRING_CHECK/bls)</li>
-  </ul>
-  <p><strong>Eliminates all <code>todo!()</code> stubs</strong>: the kernel doesn't need stubs because the trait methods don't exist when the feature is disabled. The kernel enables the feature when ready (Phase 2).</p>
-  <p><strong>Easy to verify</strong>: <code>grep -rn 'cfg.*address.registry' contrib/mir/src/</code> lists every gated block. <code>cargo build</code> (without feature) confirms nothing leaks.</p>
-  <p><strong>Scope of impact</strong>: only <code>kernel_latest</code> uses the local MIR crate (<code>path = "../../contrib/mir"</code>). The 5 other kernels (ebisu, farfadet*) pin a git revision &mdash; they are immune to our changes.</p>
+  <div class="callout-title">Two-layer feature flag architecture</div>
+  <p>The address registry feature uses <strong>two complementary feature flags</strong>:</p>
+  <table>
+    <thead><tr><th>Layer</th><th>Mechanism</th><th>Purpose</th><th>When checked</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Static</strong></td><td>Cargo feature <code>address-registry</code></td><td>Compilation: MIR code exists or not</td><td>Build time</td></tr>
+      <tr><td><strong>Dynamic</strong></td><td>Durable storage <code>/evm/feature_flags/enable_address_indexing</code></td><td>Runtime: kernel accepts/rejects the instructions</td><td>Kernel boot</td></tr>
+    </tbody>
+  </table>
+  <p>The static flag solves compilation problems (trait methods, enum variants). The dynamic flag controls whether the feature is active in production, following the existing kernel pattern for <code>enable_dal</code>, <code>enable_fa_bridge</code>, <code>enable_tezos_runtime</code>.</p>
 </div>
 
 <div class="callout safety">
-  <div class="callout-title">Macro layering (follows bls pattern)</div>
-<pre><code><span class="cm">// Base: always unsupported (sapling, open_chest, etc.)</span>
-<span class="kw">macro_rules!</span> micheline_unsupported_instructions_base { ... }
+  <div class="callout-title">Static flag: Cargo <code>address-registry</code></div>
+  <p>Follows the <code>bls</code> pattern. All MIR code gated behind <code>#[cfg(feature = "address-registry")]</code>. When off, instructions treated as unsupported. Macro layering: <code>base &rarr; common (conditional) &rarr; final (bls conditional)</code>.</p>
+  <p><strong>Must be enabled at compile time</strong> for the dynamic flag to have any effect.</p>
+</div>
 
-<span class="cm">// address-registry OFF: add INDEX_ADDRESS, GET_ADDRESS_INDEX to unsupported</span>
-<span class="cm">// address-registry ON: instructions handled by typechecker, not unsupported</span>
-#[cfg(<span class="kw">not</span>(feature = <span class="st">"address-registry"</span>))]
-<span class="kw">macro_rules!</span> micheline_unsupported_instructions_common {
-    () =&gt; { $crate::micheline_unsupported_instructions_base!()
-        | Prim::INDEX_ADDRESS | Prim::GET_ADDRESS_INDEX };
-}
-#[cfg(feature = <span class="st">"address-registry"</span>)]
-<span class="kw">macro_rules!</span> micheline_unsupported_instructions_common {
-    () =&gt; { $crate::micheline_unsupported_instructions_base!() };
-}
+<div class="callout rationale">
+  <div class="callout-title">Dynamic flag: <code>/evm/feature_flags/enable_address_indexing</code></div>
+  <p>Follows the existing kernel pattern (see <code>kernel/src/storage.rs</code>):</p>
+  <ol>
+    <li><strong>Storage path</strong>: <code>RefPath::assert_from(b"/evm/feature_flags/enable_address_indexing")</code></li>
+    <li><strong>Existence = enabled</strong>: <code>host.store_has(&amp;PATH)?.is_some()</code> (no data stored, just path existence)</li>
+    <li><strong>Read once at boot</strong>: added to <code>ExperimentalFeatures</code> struct in <code>kernel/src/chains.rs</code></li>
+    <li><strong>Boot parameter</strong>: <code>--enable-address-indexing</code> passed to kernel installer</li>
+    <li><strong>Runtime toggle</strong>: <code>store_write</code> to enable, <code>store_delete</code> to disable</li>
+  </ol>
 
-<span class="cm">// bls layer (unchanged)</span>
-#[cfg(feature = <span class="st">"bls"</span>)]
-<span class="kw">macro_rules!</span> micheline_unsupported_instructions { ... }
-#[cfg(<span class="kw">not</span>(feature = <span class="st">"bls"</span>))]
-<span class="kw">macro_rules!</span> micheline_unsupported_instructions { ... | Prim::PAIRING_CHECK }
-</code></pre>
+  <h4>Where the dynamic check happens</h4>
+  <p>The MIR typechecker/interpreter don't know about the Host. The dynamic check is in the <strong>kernel layer</strong>, before MIR is invoked. Two options:</p>
+  <ul>
+    <li><strong>Option A (typechecking gate)</strong>: when the kernel typechecks a contract at origination, if the flag is off and the contract uses INDEX_ADDRESS/GET_ADDRESS_INDEX, reject the origination. This prevents forbidden contracts from being deployed.</li>
+    <li><strong>Option B (execution gate)</strong>: let MIR typecheck and interpret normally, but check the flag at the <code>CtxTrait::index_address()</code> / <code>get_address_index()</code> implementation level. Return an error if the flag is off.</li>
+  </ul>
+  <p><strong>Recommendation: Option B</strong>. Simpler (one check per method, no typechecker changes). A contract using INDEX_ADDRESS can be originated even if the flag is off (the instruction exists in MIR), but calling it returns an error. When the flag is turned on later, existing contracts start working.</p>
 </div>
 
 <!-- ================================================================ -->
@@ -564,13 +559,38 @@ cargo test --features address-registry       <span class="cm"># 25 unit + 10 TZT
 <div class="commit">
   <div class="commit-header">
     <div class="commit-num">6</div>
-    <div class="commit-title">Kernel: enable feature flag + durable storage impl</div>
+    <div class="commit-title">Kernel: static FF + dynamic FF + durable storage impl</div>
     <span class="badge p2">P2</span>
   </div>
 
-  <h4>Cargo.toml &mdash; enable feature flag</h4>
+  <h4>Static: Cargo.toml &mdash; enable compile-time feature</h4>
 <pre><code>mir = { path = <span class="st">"../../contrib/mir"</span>, default-features = <span class="kw">false</span>,
         features = [<span class="st">"allow_lazy_storage_transfer"</span>, <span class="st">"address-registry"</span>] }</code></pre>
+
+  <h4>Dynamic: storage path + ExperimentalFeatures</h4>
+<pre><code><span class="cm">// kernel/src/storage.rs</span>
+<span class="kw">pub const</span> ENABLE_ADDRESS_INDEXING: RefPath =
+    RefPath::assert_from(b<span class="st">"/evm/feature_flags/enable_address_indexing"</span>);
+
+<span class="kw">pub fn</span> <span class="fn">enable_address_indexing</span>(host: &amp;<span class="kw">impl</span> StorageV1) -&gt; <span class="ty">bool</span> {
+    host.store_has(&amp;ENABLE_ADDRESS_INDEXING).unwrap_or(None).is_some()
+}
+
+<span class="cm">// kernel/src/chains.rs — add to ExperimentalFeatures</span>
+<span class="kw">pub struct</span> <span class="ty">ExperimentalFeatures</span> {
+    enable_tezos_runtime: <span class="ty">bool</span>,
+    enable_address_indexing: <span class="ty">bool</span>,  <span class="cm">// NEW</span>
+}
+
+<span class="cm">// tezos_execution/src/mir_ctx.rs — check in CtxTrait impl</span>
+<span class="kw">fn</span> <span class="fn">index_address</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, address: &amp;AddressHash)
+    -&gt; Result&lt;BigUint, AddressRegistryError&gt;
+{
+    <span class="kw">if</span> !<span class="kw">self</span>.features.is_address_indexing_enabled() {
+        <span class="kw">return</span> Err(AddressRegistryError::Other(<span class="st">"address indexing not enabled"</span>.into()));
+    }
+    <span class="cm">// ... durable storage impl</span>
+}</code></pre>
 
   <h4>Path helpers (new, in <code>context.rs</code> or <code>address_registry.rs</code>)</h4>
   <p>Follow the exact pattern of big_map path construction (<code>context.rs:140-202</code>):</p>
