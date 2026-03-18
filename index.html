@@ -75,9 +75,9 @@
     <li><a href="#constraint">Compilation Constraint</a></li>
     <li><a href="#rationale">Architectural Decisions</a></li>
     <li><a href="#persistence">Persistence &amp; Invariants</a></li>
-    <li><a href="#phase1">Phase 1: MIR Library (commits 1-6)</a></li>
-    <li><a href="#phase2">Phase 2: Kernel Integration (commits 7-8)</a></li>
-    <li><a href="#bonus">Bonus: View Restriction (commit 8)</a></li>
+    <li><a href="#phase1">Phase 1: MIR Library (commits 1-5)</a></li>
+    <li><a href="#phase2">Phase 2: Kernel Integration (commits 6-7)</a></li>
+    <li><a href="#bonus">Bonus: View Restriction (separate MR !21258)</a></li>
   </ul>
 </nav>
 
@@ -102,7 +102,8 @@
 
   <h4>Where the check happens</h4>
   <p>At <strong>typechecking time</strong>, in the MIR typechecker. <code>typecheck_script</code> receives an <code>allow_address_indexing: bool</code> parameter. When <code>false</code>, INDEX_ADDRESS and GET_ADDRESS_INDEX are rejected with a typechecking error &mdash; origination fails, exactly as before the feature was implemented (no regression).</p>
-  <p>The kernel reads <code>ExperimentalFeatures::is_address_indexing_enabled()</code> once at boot and passes the flag to every <code>typecheck_script</code> call (origination + execution). When the flag is turned on, contracts using these instructions can be originated and executed.</p>
+  <p>The kernel reads <code>ExperimentalFeatures::read_from_storage()</code> once at boot and stores the flag in <code>ExperimentalFeatures</code>. It is then converted to <code>mir::context::FeatureFlags</code> via <code>to_mir_feature_flags()</code> and propagated to <code>tezos_execution</code> through <code>BlockCtx</code>. The <code>tezos_execution</code> crate never reads durable storage directly for flags &mdash; consistent with how <code>enable_tezos_runtime</code> is handled.</p>
+  <p>For cross-runtime calls (<code>tezosx-tezos-runtime</code>), <code>FeatureFlags::default()</code> (all enabled) is used. This is safe because contracts were already typechecked at origination, and the flag is a one-way enablement switch.</p>
   <p>No check is needed in <code>mir_ctx.rs</code> (<code>index_address</code>/<code>get_address_index</code>) because the typechecker blocks upstream.</p>
 </div>
 
@@ -110,9 +111,9 @@
 <h2 id="rationale">Architectural Decisions</h2>
 
 <div class="callout rationale">
-  <div class="callout-title">D1: Methods on CtxTrait, behind feature flag</div>
+  <div class="callout-title">D1: Methods on CtxTrait, always compiled</div>
   <p><code>LazyStorage</code> is separate because BigMap <em>methods</em> consume it as parameter (<code>map.mem(&amp;key, *ctx.lazy_storage())</code>). <code>index_address</code> / <code>get_address_index</code> are called <strong>directly by the interpreter</strong>, like <code>voting_power()</code> or <code>origination_counter()</code>. Two methods don't justify a separate trait + boxing indirection.</p>
-  <p>All behind <code>#[cfg(feature = "address-registry")]</code> &mdash; when disabled, <code>CtxTrait</code> is unchanged, no stubs needed.</p>
+  <p>No static <code>#[cfg]</code> gating. The methods are always compiled into MIR. Activation is controlled at runtime by the dynamic feature flag via <code>FeatureFlags</code> in the typechecker.</p>
 </div>
 
 <div class="callout rationale">
@@ -173,10 +174,10 @@
 <div class="callout safety">
   <div class="callout-title">What does NOT break (verified by audit)</div>
   <ul>
-    <li><strong>CtxTrait extension</strong>: feature flag gates the new methods. When off, trait is unchanged. When on, Rust compiler forces all implementors to add the new methods. Only <code>kernel_latest</code> is affected (local path dep); 5 other kernels pin a git rev.</li>
+    <li><strong>CtxTrait extension</strong>: two new methods added. Rust compiler forces all implementors to add them. Only <code>kernel_latest</code> is affected (local path dep); 5 other kernels pin a git rev.</li>
     <li><strong>InterpretError</strong>: no exhaustive match exists. The only match on it (<code>tzt/expectation.rs:64-80</code>) ends with <code>(_, _) =&gt; false</code>. The <code>From&lt;SigCostError&gt;</code> impl (line 68) matches on <code>SigCostError</code>, not <code>InterpretError</code>.</li>
-    <li><strong>Instruction enum</strong>: no serialization (no serde derives). Only one exhaustive match: <code>interpreter.rs:284-1927</code> &mdash; handled by adding gated arms in commit 2.</li>
-    <li><strong>Ctx::default()</strong>: used in 150+ tests. New fields are behind <code>#[cfg]</code>, so existing <code>Default</code> is unchanged when feature is off.</li>
+    <li><strong>Instruction enum</strong>: no serialization (no serde derives). Only one exhaustive match: <code>interpreter.rs</code> &mdash; handled by adding new arms in commit 3.</li>
+    <li><strong>Ctx::default()</strong>: used in 150+ tests. Two new fields (<code>address_registry</code>, <code>address_registry_counter</code>) are always present with default values (empty HashMap, zero counter).</li>
     <li><strong>No existing method modified</strong>: all 16 existing <code>CtxTrait</code> methods are untouched.</li>
   </ul>
 </div>
@@ -190,9 +191,9 @@
   <thead><tr><th>Location</th><th>Comment</th><th>Why</th></tr></thead>
   <tbody>
     <tr>
-      <td>Feature flag in <code>Cargo.toml</code></td>
-      <td><code># Not in default. Kernel enables when ready.</code></td>
-      <td>Reviewer must know it's opt-in</td>
+      <td><code>FeatureFlags</code> struct docstring</td>
+      <td><code>/// Controls which Michelson instructions are accepted by the typechecker.</code></td>
+      <td>Reviewer must know what the struct does and that default=all-on is for MIR standalone</td>
     </tr>
     <tr>
       <td><code>CtxTrait::index_address</code> docstring</td>
@@ -205,9 +206,9 @@
       <td>Contract of the method. No implementation detail.</td>
     </tr>
     <tr>
-      <td><code>#[cfg]</code> on trait methods</td>
-      <td><code>// address-registry methods gated because they add trait obligations.<br>// Unlike bls (enum variants only), this gates trait methods &mdash; new pattern.<br>// See bls feature for the enum/match pattern.</code></td>
-      <td>New pattern not seen before in MIR. Must be explicit for future contributors.</td>
+      <td>SafeStorage atomicity comment</td>
+      <td><code>// The two writes (entry + counter) are not individually atomic,<br>// but SafeStorage reverts the entire batch on failure.</code></td>
+      <td>Non-obvious: reader might think partial writes can persist</td>
     </tr>
     <tr>
       <td>Interpreter: <code>addr.hash</code></td>
@@ -243,110 +244,57 @@
 <h2 id="phase1">Phase 1: MIR Library</h2>
 
 <div class="phase-header">
-  <h3><span class="badge p1">Phase 1</span> <code>contrib/mir/</code> &mdash; commits 1 to 5</h3>
-  <p>All behind feature flag. No kernel changes. Each commit compiles with <code>cargo build</code> (feature off) and <code>cargo build --features address-registry</code> (feature on).</p>
+  <h3><span class="badge p1">Phase 1</span> <code>contrib/mir/</code> + kernel FF wiring &mdash; commits 1 to 5</h3>
+  <p>No static <code>#[cfg]</code> gating. All code is always compiled. Activation is controlled by the dynamic feature flag. Each commit compiles with <code>cargo check</code>.</p>
 </div>
 
 <!-- COMMIT 1 -->
 <div class="commit">
   <div class="commit-header">
     <div class="commit-num">1</div>
-    <div class="commit-title">Add index_address / get_address_index to CtxTrait + kernel stubs</div>
+    <div class="commit-title">FeatureFlags struct + typechecker plumbing + kernel wiring</div>
     <span class="badge p1">P1</span>
   </div>
 
-  <h4>Cargo.toml &mdash; new feature flag</h4>
-<pre><code>[features]
-default = [<span class="st">"bls"</span>, <span class="st">"allow_lazy_storage_transfer"</span>]
-bls = [<span class="st">"dep:blst"</span>, <span class="st">"tezos_crypto_rs/bls"</span>]
-allow_lazy_storage_transfer = []
-address-registry = []  <span class="cm">// NEW — not in default</span></code></pre>
-
-  <h4>context.rs &mdash; all behind <code>#[cfg(feature = "address-registry")]</code></h4>
-<pre><code>#[cfg(feature = <span class="st">"address-registry"</span>)]
-#[derive(Debug, PartialEq, Eq, Clone, thiserror::Error)]
-<span class="kw">pub enum</span> <span class="ty">AddressRegistryError</span> {
-    #[error(<span class="st">"address registry error: {0}"</span>)]
-    Other(String),
+  <h4>context.rs &mdash; FeatureFlags struct</h4>
+<pre><code><span class="cm">/// Controls which Michelson instructions are accepted by the typechecker.</span>
+<span class="cm">/// Default: all enabled (for MIR standalone tests and TZT runner).</span>
+<span class="cm">/// The kernel overrides with values read from durable storage.</span>
+#[derive(Debug, Clone)]
+<span class="kw">pub struct</span> <span class="ty">FeatureFlags</span> {
+    <span class="kw">pub</span> allow_address_indexing: <span class="ty">bool</span>,
 }
 
-<span class="cm">// In CtxTrait:</span>
-
-<span class="cm">/// Idempotent: same address always returns same index.</span>
-<span class="cm">/// Invariant: key is AddressHash — entrypoint is NOT part of the registry key.</span>
-#[cfg(feature = <span class="st">"address-registry"</span>)]
-<span class="kw">fn</span> <span class="fn">index_address</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, address: &amp;AddressHash)
-    -&gt; Result&lt;BigUint, AddressRegistryError&gt;;
-
-<span class="cm">/// Returns Some(index) if registered, None otherwise.</span>
-#[cfg(feature = <span class="st">"address-registry"</span>)]
-<span class="kw">fn</span> <span class="fn">get_address_index</span>(&amp;<span class="kw">self</span>, address: &amp;AddressHash)
-    -&gt; Result&lt;Option&lt;BigUint&gt;, AddressRegistryError&gt;;
-
-<span class="cm">// Ctx struct:</span>
-#[cfg(feature = <span class="st">"address-registry"</span>)]
-<span class="kw">pub</span> address_registry: HashMap&lt;AddressHash, BigUint&gt;,
-#[cfg(feature = <span class="st">"address-registry"</span>)]
-address_registry_counter: BigUint,
-
-<span class="cm">// Ctx impl:</span>
-#[cfg(feature = <span class="st">"address-registry"</span>)]
-<span class="kw">fn</span> <span class="fn">index_address</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, address: &amp;AddressHash)
-    -&gt; Result&lt;BigUint, AddressRegistryError&gt;
-{
-    <span class="kw">let</span> counter = &amp;<span class="kw">mut</span> <span class="kw">self</span>.address_registry_counter;
-    <span class="kw">let</span> index = <span class="kw">self</span>.address_registry
-        .entry(address.clone())
-        .or_insert_with(|| {
-            <span class="kw">let</span> idx = counter.clone();
-            *counter += BigUint::from(1u32);
-            idx
-        })
-        .clone();
-    Ok(index)
-}
-
-#[cfg(feature = <span class="st">"address-registry"</span>)]
-<span class="kw">fn</span> <span class="fn">get_address_index</span>(&amp;<span class="kw">self</span>, address: &amp;AddressHash)
-    -&gt; Result&lt;Option&lt;BigUint&gt;, AddressRegistryError&gt;
-{
-    Ok(<span class="kw">self</span>.address_registry.get(address).cloned())
+<span class="kw">impl</span> Default <span class="kw">for</span> FeatureFlags {
+    <span class="kw">fn</span> <span class="fn">default</span>() -&gt; <span class="ty">Self</span> { Self { allow_address_indexing: <span class="kw">true</span> } }
 }</code></pre>
 
-  <h4>interpreter.rs &mdash; error variant (gated)</h4>
-<pre><code>#[cfg(feature = <span class="st">"address-registry"</span>)]
-#[error(<span class="st">"address registry error: {0}"</span>)]
-AddressRegistryError(#[from] AddressRegistryError),</code></pre>
+  <h4>typechecker.rs &mdash; <code>&amp;FeatureFlags</code> threaded through all typecheck functions</h4>
+  <p><code>typecheck_script</code>, <code>typecheck</code>, <code>typecheck_instruction</code>, <code>typecheck_lambda</code>, <code>typecheck_map_block</code> all receive <code>feature_flags: &amp;FeatureFlags</code>. Guard:</p>
+<pre><code>(App(prim @ (INDEX_ADDRESS | GET_ADDRESS_INDEX), ..), _)
+    <span class="kw">if</span> !feature_flags.allow_address_indexing =&gt;
+{
+    Err(TcError::TodoInstr(*prim))?
+}</code></pre>
+  <p>All existing callers pass <code>&amp;FeatureFlags::default()</code> &mdash; zero behavior change.</p>
 
-  <div class="commit-files">Files: <code>Cargo.toml</code>, <code>context.rs</code>, <code>interpreter.rs</code> (1 line). <strong>No kernel changes.</strong></div>
-
-  <div class="callout compiles">
-    <div class="callout-title">Why this compiles</div>
-    <ul>
-      <li><strong>Feature off (default)</strong>: none of this code exists. Zero impact on existing build.</li>
-      <li><strong>Feature on</strong>: <code>Ctx</code> implements the methods. Kernel doesn't need stubs because it doesn't enable the feature yet.</li>
-      <li><strong>Verify</strong>: <code>cargo build</code> (default) + <code>cargo build --features address-registry</code> + <code>cargo test --features address-registry</code></li>
-    </ul>
-  </div>
-
-  <h4>Tests (in context.rs or test module)</h4>
+  <h4>Kernel wiring &mdash; <code>ExperimentalFeatures</code> + <code>BlockCtx</code></h4>
   <ul>
-    <li>First address &rarr; <code>Ok(0)</code>, second &rarr; <code>Ok(1)</code></li>
-    <li>Same address twice &rarr; same <code>Ok(n)</code> (idempotency)</li>
-    <li>3 distinct addresses &rarr; 3 distinct consecutive indices</li>
-    <li><code>get_address_index</code> unregistered &rarr; <code>Ok(None)</code></li>
-    <li><code>get_address_index</code> registered &rarr; <code>Ok(Some(n))</code></li>
-    <li><strong>All address variants</strong>: tz1, KT1, sr1 &mdash; verify Hash/Eq correct per variant</li>
-    <li><strong>Zero address on fresh Ctx</strong>: <code>get_address_index(zero_addr)</code> &rarr; <code>Ok(None)</code> (documents D5 divergence from L1)</li>
+    <li><code>storage.rs</code>: <code>ENABLE_ADDRESS_INDEXING</code> path + <code>enable_address_indexing()</code> reader</li>
+    <li><code>chains.rs</code>: <code>enable_address_indexing</code> field in <code>ExperimentalFeatures</code>, <code>to_mir_feature_flags()</code> conversion</li>
+    <li><code>mir_ctx.rs</code>: <code>feature_flags: mir::context::FeatureFlags</code> in <code>BlockCtx</code></li>
+    <li><code>configuration.rs</code>: reads flags at boot via <code>ExperimentalFeatures::read_from_storage()</code></li>
+    <li><code>tezos_execution/lib.rs</code>: uses <code>&amp;block_ctx.feature_flags</code> for origination + transfer, never reads durable storage directly</li>
+    <li><code>tezosx-tezos-runtime</code>: <code>FeatureFlags::default()</code> for cross-runtime calls</li>
   </ul>
+
+  <div class="commit-files">Files: <code>context.rs</code>, <code>typechecker.rs</code>, <code>interpreter.rs</code>, <code>lib.rs</code> (doctest), examples, <code>tzt.rs</code>, <code>typecheck_script/main.rs</code>, kernel: <code>storage.rs</code>, <code>chains.rs</code>, <code>configuration.rs</code>, <code>apply.rs</code>, <code>block.rs</code>, <code>mir_ctx.rs</code>, <code>tezos_execution/lib.rs</code>, <code>tezosx-tezos-runtime/lib.rs</code>.</div>
 
   <div class="callout compiles">
     <div class="callout-title">Definition of Done</div>
-<pre><code>cd contrib/mir
-cargo build                                  <span class="cm"># feature off: no change</span>
-cargo build --features address-registry      <span class="cm"># feature on: compiles</span>
-cargo test --features address-registry       <span class="cm"># 7 new tests pass</span>
-grep -rn 'cfg.*address.registry' src/        <span class="cm"># every new block is gated</span></code></pre>
+<pre><code>cd etherlink/kernel_latest
+cargo check -p evm_kernel --tests    <span class="cm"># full kernel compiles</span>
+cargo check -p mir                   <span class="cm"># MIR compiles</span></code></pre>
   </div>
 </div>
 
@@ -354,7 +302,7 @@ grep -rn 'cfg.*address.registry' src/        <span class="cm"># every new block 
 <div class="commit">
   <div class="commit-header">
     <div class="commit-num">2</div>
-    <div class="commit-title">AST variants + typechecking rules + interpreter stubs</div>
+    <div class="commit-title">Add index_address / get_address_index to CtxTrait + in-memory impl + 7 tests</div>
     <span class="badge p1">P1</span>
   </div>
 
@@ -366,9 +314,7 @@ grep -rn 'cfg.*address.registry' src/        <span class="cm"># every new block 
 
   <h4>ast.rs &mdash; add variants (gated)</h4>
 <pre><code>IsImplicitAccount,
-#[cfg(feature = <span class="st">"address-registry"</span>)]
 IndexAddress,
-#[cfg(feature = <span class="st">"address-registry"</span>)]
 GetAddressIndex,
 TotalVotingPower,</code></pre>
 
@@ -403,7 +349,7 @@ I::GetAddressIndex =&gt; {
     todo!(<span class="st">"commit 3: interpreter implementation"</span>)
 }</code></pre>
   <p>These <code>todo!()</code> are <strong>internal to the feature flag</strong>: they only exist when <code>address-registry</code> is enabled. Replaced by real code in commit 3. Between commits 2 and 3, the <code>todo!()</code> is unreachable: typechecking tests call <code>typecheck_instruction()</code> (returns an <code>Instruction</code> value) but never <code>interpret()</code>.</p>
-  <p><strong>Verify</strong>: <code>cargo test --features address-registry</code> must pass at commit 2.</p>
+  <p><strong>Verify</strong>: <code>cargo test</code> must pass at commit 2.</p>
 
   <div class="commit-files">Files: <code>ast.rs</code>, <code>ast/micheline.rs</code>, <code>typechecker.rs</code>, <code>interpreter.rs</code></div>
 
@@ -428,9 +374,8 @@ I::GetAddressIndex =&gt; {
   <div class="callout compiles">
     <div class="callout-title">Definition of Done</div>
 <pre><code>cd contrib/mir
-cargo build                                  <span class="cm"># feature off: no change</span>
-cargo build --features address-registry      <span class="cm"># feature on: compiles</span>
-cargo test --features address-registry       <span class="cm"># 5 new TC tests + 7 prev = all pass</span>
+cargo build                                  cargo check      <span class="cm"># compiles</span>
+cargo test       <span class="cm"># 5 new TC tests + 7 prev = all pass</span>
 cargo test                                   <span class="cm"># existing tests unaffected</span></code></pre>
   </div>
 </div>
@@ -438,8 +383,8 @@ cargo test                                   <span class="cm"># existing tests u
 <!-- COMMIT 3 -->
 <div class="commit">
   <div class="commit-header">
-    <div class="commit-num">3</div>
-    <div class="commit-title">Interpreter + gas costs (replaces todo! from commit 2)</div>
+    <div class="commit-num">3-5</div>
+    <div class="commit-title">AST + typechecking + interpreter + gas + TZT tests</div>
     <span class="badge p1">P1</span>
   </div>
 
@@ -524,9 +469,8 @@ I::GetAddressIndex =&gt; {
   <div class="callout compiles">
     <div class="callout-title">Definition of Done</div>
 <pre><code>cd contrib/mir
-cargo build                                  <span class="cm"># feature off: no change</span>
-cargo build --features address-registry      <span class="cm"># compiles, zero todo!()</span>
-cargo test --features address-registry       <span class="cm"># 25 unit + 10 TZT = all pass</span></code></pre>
+cargo check      <span class="cm"># compiles, zero todo!()</span>
+cargo test       <span class="cm"># 28 unit + 10 TZT = all pass</span></code></pre>
   </div>
 </div>
 
@@ -535,7 +479,7 @@ cargo test --features address-registry       <span class="cm"># 25 unit + 10 TZT
 
 <div class="phase-header">
   <h3><span class="badge p2">Phase 2</span> <code>etherlink/kernel_latest/</code> &mdash; commits 6-7</h3>
-  <p>Enables feature flag in kernel. Implements durable storage backend. E2E test.</p>
+  <p>Implements durable storage backend for the address registry. E2E test.</p>
 </div>
 
 <!-- COMMIT 7 -->
@@ -656,7 +600,7 @@ cargo test                                   <span class="cm"># MockCtx tests pa
 
 cd contrib/mir
 cargo build                                  <span class="cm"># MIR still compiles standalone</span>
-cargo test --features address-registry       <span class="cm"># MIR tests still pass</span></code></pre>
+cargo test       <span class="cm"># MIR tests still pass</span></code></pre>
     <p>Compiler forces <code>Ctx&lt;Host&gt;</code> and <code>MockCtx</code> to implement the new methods. If any method is missing, compilation fails.</p>
   </div>
 </div>
@@ -759,7 +703,7 @@ dune exec tezt/tests/main.exe -- \
 <h2 id="bonus">Bonus: View Restriction</h2>
 
 <div class="phase-header">
-  <h3><span class="badge bonus">Bonus</span> Post-POC &mdash; commit 8</h3>
+  <h3><span class="badge bonus">Bonus</span> Separate MR: <a href="https://gitlab.com/tezos/tezos/-/merge_requests/21258">!21258</a> (<a href="https://linear.app/tezos/issue/L2-1049">L2-1049</a>)</h3>
 </div>
 
 <div class="commit">
@@ -842,8 +786,8 @@ dune exec tezt/tests/main.exe -- \
   <div class="callout compiles">
     <div class="callout-title">Definition of Done</div>
 <pre><code>cd contrib/mir
-cargo build --features address-registry
-cargo test --features address-registry       <span class="cm"># 14 new view tests + all prev pass</span>
+cargo check
+cargo test       <span class="cm"># 14 new view tests + all prev pass</span>
 cargo test                                   <span class="cm"># existing tests unaffected (in_view=false everywhere)</span></code></pre>
   </div>
 </div>
@@ -865,7 +809,7 @@ cargo test                                   <span class="cm"># existing tests u
 </table>
 
 <p style="margin-top: 1rem; color: var(--text-muted); font-size: 0.9rem;">
-  <strong>Verify at any commit</strong>: <code>cargo build</code> (default, feature off &mdash; no change) + <code>cargo build --features address-registry</code> (feature on). <br>
+  <strong>Verify at any commit</strong>: <code>cargo build</code> (default, feature off &mdash; no change) + <code>cargo check</code> (feature on). <br>
   <strong>Grep</strong>: <code>grep -rn 'cfg.*address.registry' contrib/mir/src/</code> lists every gated block.
 </p>
 
