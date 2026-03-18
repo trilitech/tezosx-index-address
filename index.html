@@ -64,7 +64,7 @@
 
 <header>
   <h1>Implementation Plan: <code>INDEX_ADDRESS</code> / <code>GET_ADDRESS_INDEX</code></h1>
-  <p class="subtitle">Branch: <code>saroupille@mir-address-registry</code> &mdash; 8 commits, 3 phases &mdash; Every commit compiles. Feature-flagged.</p>
+  <p class="subtitle">Branch: <code>saroupille@mir-address-registry</code> &mdash; Feature-flagged. Phase 1 done (25 unit + 10 TZT tests).</p>
 </header>
 
 <div class="container">
@@ -494,10 +494,9 @@ I::GetAddressIndex =&gt; {
     <p>INDEX_ADDRESS and GET_ADDRESS_INDEX work end-to-end in MIR with the in-memory <code>Ctx</code>. Zero <code>todo!()</code> remaining in <code>contrib/mir/</code>.</p>
   </div>
 
-  <h4>Tests &mdash; mutation-resistant (run with <code>--features address-registry</code>)</h4>
-  <p>Each test is designed to kill a specific mutation. If a mutant survives, the test suite has a gap.</p>
+  <h4>Tests &mdash; 17 interpreter + 7 context (run with <code>--features address-registry</code>)</h4>
   <table>
-    <thead><tr><th>Test</th><th>Mutation killed</th></tr></thead>
+    <thead><tr><th>Test</th><th>What it catches</th></tr></thead>
     <tbody>
       <tr><td>INDEX returns Nat (not Int, not Option)</td><td>Wrong TypedValue constructor</td></tr>
       <tr><td>GET returns Option&lt;Nat&gt; (not bare Nat)</td><td>Forgetting new_option wrapper</td></tr>
@@ -506,80 +505,50 @@ I::GetAddressIndex =&gt; {
       <tr><td>Same addr twice = same index</td><td>Idempotency broken</td></tr>
       <tr><td>GET on fresh ctx = None</td><td>INDEX/GET swapped</td></tr>
       <tr><td>GET does not consume an index</td><td>GET accidentally writes</td></tr>
-      <tr><td>Same KT1 with %do and %default = same index</td><td>Entrypoint not stripped</td></tr>
+      <tr><td>GET registered twice = same Some</td><td>Unstable reads</td></tr>
+      <tr><td>GET unregistered twice = None both times</td><td>Read side effects</td></tr>
+      <tr><td>INDEX(%do) then GET(%default) = same</td><td>Entrypoint not stripped (cross)</td></tr>
+      <tr><td>INDEX(bare) then GET(%do) = finds it</td><td>Entrypoint not stripped (asymmetric)</td></tr>
+      <tr><td>INDEX(A), GET(A), INDEX(B), GET(A)=Some(0)</td><td>New index alters existing entry</td></tr>
       <tr><td>Gas exactly at cost: succeeds</td><td>Off-by-one in gas check</td></tr>
       <tr><td>Gas at cost-1: OutOfGas, stack unchanged</td><td>Gas not consumed / wrong amount</td></tr>
-      <tr><td>Gas consumed = exact constant value</td><td>Swapped gas constants</td></tr>
       <tr><td>INDEX(A), GET(B)=None, INDEX(B), GET(A)=Some(0)</td><td>Cross-instruction state corruption</td></tr>
+      <tr><td>sr1 address works</td><td>Address variant not handled</td></tr>
+      <tr><td>Zero address not preregistered in Default</td><td>Documents D5 divergence from L1</td></tr>
     </tbody>
   </table>
+
+  <h4>10 TZT tests</h4>
+  <table>
+    <thead><tr><th>File</th><th>What it tests</th></tr></thead>
+    <tbody>
+      <tr><td><code>index_address_00</code></td><td>Basic tz1 &rarr; nat 0</td></tr>
+      <tr><td><code>index_address_01</code></td><td>INDEX then GET in same execution &rarr; consistent</td></tr>
+      <tr><td><code>index_address_02</code></td><td>sr1 address</td></tr>
+      <tr><td><code>index_address_03</code></td><td>Wrong input type &rarr; StaticError</td></tr>
+      <tr><td><code>index_address_04</code></td><td>Address with entrypoint &rarr; same as without</td></tr>
+      <tr><td><code>index_address_05</code></td><td>Full contract: INDEX + GET in one call</td></tr>
+      <tr><td><code>index_address_06</code></td><td>Idempotency: same addr twice &rarr; same nat</td></tr>
+      <tr><td><code>index_address_07</code></td><td>Two distinct addresses &rarr; consecutive indices</td></tr>
+      <tr><td><code>get_address_index_00</code></td><td>Unregistered &rarr; None</td></tr>
+      <tr><td><code>get_address_index_01</code></td><td>Wrong input type &rarr; StaticError</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Not testable in MIR (deferred to Phase 2 E2E)</h4>
+  <ul>
+    <li><strong>Rollback/revert</strong>: in-memory Ctx has no rollback. Tested via SafeStorage in E2E.</li>
+    <li><strong>Cross-block persistence</strong>: no notion of block in MIR.</li>
+    <li><strong>Internal op failure + registry persists</strong>: requires a node with contract calls.</li>
+    <li><strong>Durable storage I/O errors / PathNotFound handling</strong>: requires kernel Host.</li>
+  </ul>
 
   <div class="callout compiles">
     <div class="callout-title">Definition of Done</div>
 <pre><code>cd contrib/mir
 cargo build                                  <span class="cm"># feature off: no change</span>
 cargo build --features address-registry      <span class="cm"># compiles, zero todo!()</span>
-cargo test --features address-registry       <span class="cm"># 11 new + prev = all pass</span>
-grep -rn 'todo!' src/interpreter.rs          <span class="cm"># zero results for address-registry</span></code></pre>
-  </div>
-</div>
-
-<!-- COMMIT 4 -->
-<div class="commit">
-  <div class="commit-header">
-    <div class="commit-num">4</div>
-    <div class="commit-title">TZT test cases</div>
-    <span class="badge p1">P1</span>
-  </div>
-
-<pre><code><span class="cm"># INDEX_ADDRESS on tz1 address</span>
-code { INDEX_ADDRESS } ;
-input { Stack_elt address <span class="st">"tz1N2y21z6M4aBaCbaZXYKDz4xHsWY4MbFMg"</span> } ;
-output { Stack_elt nat 0 }
-
-<span class="cm"># GET_ADDRESS_INDEX on unregistered address</span>
-code { GET_ADDRESS_INDEX } ;
-input { Stack_elt address <span class="st">"KT1BEqzn5Wx8uJrZNvuS9DVHmLvG9td3fDLi"</span> } ;
-output { Stack_elt (option nat) None }
-
-<span class="cm"># INDEX then GET in same execution</span>
-code { DUP ; INDEX_ADDRESS ; SWAP ; GET_ADDRESS_INDEX } ;
-input { Stack_elt address <span class="st">"tz1N2y21z6M4aBaCbaZXYKDz4xHsWY4MbFMg"</span> } ;
-output { Stack_elt (option nat) (Some 0) ; Stack_elt nat 0 }</code></pre>
-
-  <div class="commit-files">Files: new TZT test data files</div>
-  <div class="callout compiles">
-    <div class="callout-title">Definition of Done</div>
-<pre><code>cd contrib/mir
-cargo run --features address-registry \
-  --bin tzt_runner -- &lt;tzt_file&gt;             <span class="cm"># each TZT file passes</span>
-cargo test --features address-registry       <span class="cm"># all tests pass</span></code></pre>
-  </div>
-</div>
-
-<!-- COMMIT 5 -->
-<div class="commit">
-  <div class="commit-header">
-    <div class="commit-num">5</div>
-    <div class="commit-title">Combined contract test (both instructions together)</div>
-    <span class="badge p1">P1</span>
-  </div>
-
-<pre><code><span class="cm">// Contract that indexes an address and queries it in the same call:</span>
-{ parameter address ;
-  storage (pair nat (option nat)) ;
-  code { CAR ; DUP ; INDEX_ADDRESS ; SWAP ;
-         GET_ADDRESS_INDEX ; PAIR ; NIL operation ; PAIR } }
-
-<span class="cm">// Assert: call with tz1abc -> storage = (Pair 0 (Some 0))</span>
-<span class="cm">// INDEX returns 0 (first registration), GET returns Some(0).</span></code></pre>
-
-  <div class="commit-files">Files: test file in <code>contrib/mir/</code></div>
-  <div class="callout compiles">
-    <div class="callout-title">Definition of Done</div>
-<pre><code>cd contrib/mir
-cargo test --features address-registry       <span class="cm"># contract test passes</span></code></pre>
-    <p>After this commit, Phase 1 is complete. <code>cargo test --features address-registry</code> runs all 23+ tests for the feature.</p>
+cargo test --features address-registry       <span class="cm"># 25 unit + 10 TZT = all pass</span></code></pre>
   </div>
 </div>
 
@@ -829,11 +798,12 @@ cargo test --features address-registry       <span class="cm"># 4 new view tests
 <table>
   <thead><tr><th>Commit</th><th>Phase</th><th>What</th><th>Files</th><th>Feature flag</th><th>Tests</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td><span class="badge p1">P1</span></td><td>FF + CtxTrait + Ctx impl + error type</td><td>Cargo.toml, context.rs, interpreter.rs</td><td>Defined (not default)</td><td>7 unit tests</td></tr>
-    <tr><td>2</td><td><span class="badge p1">P1</span></td><td>AST + typechecking + interpreter todo!</td><td>ast.rs, micheline.rs, typechecker.rs, interpreter.rs</td><td>All gated</td><td>5 TC tests</td></tr>
-    <tr><td>3</td><td><span class="badge p1">P1</span></td><td>Interpreter + gas (replaces todo!)</td><td>gas.rs, interpreter.rs</td><td>Interp gated, gas not</td><td>11 interp tests</td></tr>
-    <tr><td>4</td><td><span class="badge p1">P1</span></td><td>TZT tests</td><td>tzt data</td><td>Run with --features</td><td>3+ TZT cases</td></tr>
-    <tr><td>5</td><td><span class="badge p1">P1</span></td><td>Combined contract test</td><td>test file</td><td>Run with --features</td><td>1 contract test</td></tr>
+    <tr><td>1</td><td><span class="badge p1">P1</span></td><td>FF + CtxTrait + Ctx impl + error type</td><td>Cargo.toml, context.rs, interpreter.rs</td><td>Defined (not default)</td><td>7 context tests</td></tr>
+    <tr><td>2</td><td><span class="badge p1">P1</span></td><td>AST + typechecking + interpreter todo!</td><td>ast.rs, micheline.rs, typechecker.rs, interpreter.rs</td><td>All gated</td><td>2 TC tests</td></tr>
+    <tr><td>3</td><td><span class="badge p1">P1</span></td><td>Interpreter + gas (replaces todo!)</td><td>gas.rs, interpreter.rs</td><td>Interp gated, gas not</td><td>12 interp tests</td></tr>
+    <tr><td>4</td><td><span class="badge p1">P1</span></td><td>TZT tests</td><td>tzt data</td><td>Run with --features</td><td>8 TZT + snapshot</td></tr>
+    <tr><td>5</td><td><span class="badge p1">P1</span></td><td>Combined contract TZT</td><td>tzt data</td><td>Run with --features</td><td>1 TZT</td></tr>
+    <tr><td></td><td></td><td>Adversarial tests</td><td>interpreter.rs, tzt data</td><td></td><td>5 unit + 2 TZT</td></tr>
     <tr><td>6</td><td><span class="badge p2">P2</span></td><td>Kernel: enable FF + implement</td><td>mir_ctx.rs, Cargo.toml</td><td>Activated</td><td>MockCtx tests</td></tr>
     <tr><td>7</td><td><span class="badge p2">P2</span></td><td>E2E test</td><td>tezt test</td><td>&mdash;</td><td>E2E scenario</td></tr>
     <tr><td>8</td><td><span class="badge bonus">Bonus</span></td><td>View restriction</td><td>typechecker.rs</td><td>Gated</td><td>4 view tests</td></tr>
