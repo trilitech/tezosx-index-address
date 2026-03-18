@@ -781,7 +781,8 @@ dune exec tezt/tests/main.exe -- \
   <h3>Implementation</h3>
 
   <h4>1. Add <code>in_view: bool</code> to <code>typecheck()</code> and <code>typecheck_instruction()</code></h4>
-  <p>Simpler than a full <code>TypecheckMode</code> enum. A boolean is sufficient because we only need two states: "in a view body" vs "not". The <code>LAMBDA</code> case resets it to <code>false</code> (lambdas in views are allowed to contain forbidden instructions — they could be returned and executed elsewhere).</p>
+  <p>Simpler than a full <code>TypecheckMode</code> enum. A boolean is sufficient because we only need two states: "in a view body" vs "not".</p>
+  <p>The <code>LAMBDA</code>/<code>LAMBDA_REC</code> case: <code>typecheck_lambda</code> calls <code>typecheck(..., in_view=false)</code>. This creates a new typechecking scope — <code>in_view</code> from the parent does not propagate into lambda bodies. Matches L1 behavior: <code>Tc_context.add_lambda</code> is a sticky flag in the OCaml protocol that prevents <code>check_not_in_view</code> from rejecting (see <code>script_tc_context.ml:57-69</code>). The effect is the same: forbidden instructions are allowed inside lambdas defined in views, because the lambda could be returned and executed elsewhere.</p>
 
 <pre><code><span class="cm">// Current:</span>
 <span class="kw">fn</span> <span class="fn">typecheck</span>(ast, gas, self_entrypoints, opt_stack)
