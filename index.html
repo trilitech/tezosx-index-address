@@ -82,45 +82,27 @@
 </nav>
 
 <!-- ================================================================ -->
-<h2 id="constraint">Feature Flags: Static &amp; Dynamic</h2>
+<h2 id="constraint">Feature Flag</h2>
 
 <div class="callout rationale">
-  <div class="callout-title">Two-layer feature flag architecture</div>
-  <p>The address registry feature uses <strong>two complementary feature flags</strong>:</p>
-  <table>
-    <thead><tr><th>Layer</th><th>Mechanism</th><th>Purpose</th><th>When checked</th></tr></thead>
-    <tbody>
-      <tr><td><strong>Static</strong></td><td>Cargo feature <code>address-registry</code></td><td>Compilation: MIR code exists or not</td><td>Build time</td></tr>
-      <tr><td><strong>Dynamic</strong></td><td>Durable storage <code>/evm/feature_flags/enable_address_indexing</code></td><td>Runtime: kernel accepts/rejects the instructions</td><td>Kernel boot</td></tr>
-    </tbody>
-  </table>
-  <p>The static flag solves compilation problems (trait methods, enum variants). The dynamic flag controls whether the feature is active in production, following the existing kernel pattern for <code>enable_dal</code>, <code>enable_fa_bridge</code>, <code>enable_tezos_runtime</code>.</p>
-</div>
-
-<div class="callout safety">
-  <div class="callout-title">Static flag: Cargo <code>address-registry</code></div>
-  <p>Follows the <code>bls</code> pattern. All MIR code gated behind <code>#[cfg(feature = "address-registry")]</code>. When off, instructions treated as unsupported. Macro layering: <code>base &rarr; common (conditional) &rarr; final (bls conditional)</code>.</p>
-  <p><strong>Must be enabled at compile time</strong> for the dynamic flag to have any effect.</p>
+  <div class="callout-title">Dynamic feature flag only &mdash; no static Cargo feature</div>
+  <p>The address registry instructions are <strong>always compiled</strong> into MIR and the kernel. No <code>#[cfg]</code> gating. Activation is controlled at runtime by a dynamic feature flag in durable storage, following the existing kernel pattern for <code>enable_dal</code>, <code>enable_fa_bridge</code>, <code>enable_tezos_runtime</code>.</p>
 </div>
 
 <div class="callout rationale">
-  <div class="callout-title">Dynamic flag: <code>/evm/feature_flags/enable_address_indexing</code></div>
-  <p>Follows the existing kernel pattern (see <code>kernel/src/storage.rs</code>):</p>
+  <div class="callout-title"><code>/evm/feature_flags/enable_address_indexing</code></div>
+  <p>Pattern from <code>kernel/src/storage.rs</code>:</p>
   <ol>
     <li><strong>Storage path</strong>: <code>RefPath::assert_from(b"/evm/feature_flags/enable_address_indexing")</code></li>
-    <li><strong>Existence = enabled</strong>: <code>host.store_has(&amp;PATH)?.is_some()</code> (no data stored, just path existence)</li>
-    <li><strong>Read once at boot</strong>: added to <code>ExperimentalFeatures</code> struct in <code>kernel/src/chains.rs</code></li>
+    <li><strong>Existence = enabled</strong>: <code>host.store_has(&amp;PATH)?.is_some()</code> (no data, just path existence)</li>
+    <li><strong>Read at boot</strong>: added to <code>ExperimentalFeatures</code> struct in <code>kernel/src/chains.rs</code></li>
     <li><strong>Boot parameter</strong>: <code>--enable-address-indexing</code> passed to kernel installer</li>
     <li><strong>Runtime toggle</strong>: <code>store_write</code> to enable, <code>store_delete</code> to disable</li>
   </ol>
 
-  <h4>Where the dynamic check happens</h4>
-  <p>The MIR typechecker/interpreter don't know about the Host. The dynamic check is in the <strong>kernel layer</strong>, before MIR is invoked. Two options:</p>
-  <ul>
-    <li><strong>Option A (typechecking gate)</strong>: when the kernel typechecks a contract at origination, if the flag is off and the contract uses INDEX_ADDRESS/GET_ADDRESS_INDEX, reject the origination. This prevents forbidden contracts from being deployed.</li>
-    <li><strong>Option B (execution gate)</strong>: let MIR typecheck and interpret normally, but check the flag at the <code>CtxTrait::index_address()</code> / <code>get_address_index()</code> implementation level. Return an error if the flag is off.</li>
-  </ul>
-  <p><strong>Recommendation: Option B</strong>. Simpler (one check per method, no typechecker changes). A contract using INDEX_ADDRESS can be originated even if the flag is off (the instruction exists in MIR), but calling it returns an error. When the flag is turned on later, existing contracts start working.</p>
+  <h4>Where the check happens</h4>
+  <p>At the kernel <code>CtxTrait</code> implementation (<code>mir_ctx.rs</code>). <code>index_address()</code> and <code>get_address_index()</code> return an error if the flag is off. The MIR typechecker and interpreter are unaware of the flag &mdash; they always support the instructions.</p>
+  <p>A contract using INDEX_ADDRESS can be originated even if the flag is off. Calling it returns an error. When the flag is turned on, existing contracts start working.</p>
 </div>
 
 <!-- ================================================================ -->
@@ -559,15 +541,11 @@ cargo test --features address-registry       <span class="cm"># 25 unit + 10 TZT
 <div class="commit">
   <div class="commit-header">
     <div class="commit-num">6</div>
-    <div class="commit-title">Kernel: static FF + dynamic FF + durable storage impl</div>
+    <div class="commit-title">Kernel: dynamic FF + durable storage impl</div>
     <span class="badge p2">P2</span>
   </div>
 
-  <h4>Static: Cargo.toml &mdash; enable compile-time feature</h4>
-<pre><code>mir = { path = <span class="st">"../../contrib/mir"</span>, default-features = <span class="kw">false</span>,
-        features = [<span class="st">"allow_lazy_storage_transfer"</span>, <span class="st">"address-registry"</span>] }</code></pre>
-
-  <h4>Dynamic: storage path + ExperimentalFeatures</h4>
+  <h4>Dynamic feature flag</h4>
 <pre><code><span class="cm">// kernel/src/storage.rs</span>
 <span class="kw">pub const</span> ENABLE_ADDRESS_INDEXING: RefPath =
     RefPath::assert_from(b<span class="st">"/evm/feature_flags/enable_address_indexing"</span>);
@@ -577,10 +555,7 @@ cargo test --features address-registry       <span class="cm"># 25 unit + 10 TZT
 }
 
 <span class="cm">// kernel/src/chains.rs — add to ExperimentalFeatures</span>
-<span class="kw">pub struct</span> <span class="ty">ExperimentalFeatures</span> {
-    enable_tezos_runtime: <span class="ty">bool</span>,
-    enable_address_indexing: <span class="ty">bool</span>,  <span class="cm">// NEW</span>
-}
+enable_address_indexing: crate::storage::enable_address_indexing(host).unwrap_or(<span class="kw">false</span>),
 
 <span class="cm">// tezos_execution/src/mir_ctx.rs — check in CtxTrait impl</span>
 <span class="kw">fn</span> <span class="fn">index_address</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, address: &amp;AddressHash)
@@ -878,15 +853,15 @@ cargo test                                   <span class="cm"># existing tests u
 <table>
   <thead><tr><th>Commit</th><th>Phase</th><th>What</th><th>Files</th><th>Feature flag</th><th>Tests</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td><span class="badge p1">P1</span></td><td>FF + CtxTrait + Ctx impl + error type</td><td>Cargo.toml, context.rs, interpreter.rs</td><td>Defined (not default)</td><td>7 context tests</td></tr>
-    <tr><td>2</td><td><span class="badge p1">P1</span></td><td>AST + typechecking + interpreter todo!</td><td>ast.rs, micheline.rs, typechecker.rs, interpreter.rs</td><td>All gated</td><td>2 TC tests</td></tr>
-    <tr><td>3</td><td><span class="badge p1">P1</span></td><td>Interpreter + gas (replaces todo!)</td><td>gas.rs, interpreter.rs</td><td>Interp gated, gas not</td><td>12 interp tests</td></tr>
-    <tr><td>4</td><td><span class="badge p1">P1</span></td><td>TZT tests</td><td>tzt data</td><td>Run with --features</td><td>8 TZT + snapshot</td></tr>
-    <tr><td>5</td><td><span class="badge p1">P1</span></td><td>Combined contract TZT</td><td>tzt data</td><td>Run with --features</td><td>1 TZT</td></tr>
+    <tr><td>1</td><td><span class="badge p1">P1</span></td><td>CtxTrait + Ctx impl + error type</td><td>context.rs, interpreter.rs</td><td></td><td>7 context tests</td></tr>
+    <tr><td>2</td><td><span class="badge p1">P1</span></td><td>AST + typechecking + interpreter todo!</td><td>ast.rs, micheline.rs, typechecker.rs, interpreter.rs</td><td></td><td>2 TC tests</td></tr>
+    <tr><td>3</td><td><span class="badge p1">P1</span></td><td>Interpreter + gas (replaces todo!)</td><td>gas.rs, interpreter.rs</td><td></td><td>12 interp tests</td></tr>
+    <tr><td>4</td><td><span class="badge p1">P1</span></td><td>TZT tests</td><td>tzt data</td><td></td><td>8 TZT + snapshot</td></tr>
+    <tr><td>5</td><td><span class="badge p1">P1</span></td><td>Combined contract TZT</td><td>tzt data</td><td></td><td>1 TZT</td></tr>
     <tr><td>6</td><td><span class="badge p1">P1</span></td><td>Adversarial tests</td><td>interpreter.rs, tzt data</td><td></td><td>5 unit + 2 TZT</td></tr>
     <tr><td>7</td><td><span class="badge p1">P1</span></td><td>INDEX stability test</td><td>interpreter.rs, tzt data</td><td></td><td>1 unit</td></tr>
-    <tr><td>8</td><td><span class="badge p2">P2</span></td><td>Kernel: durable storage impl</td><td>mir_ctx.rs, Cargo.toml</td><td>Gated</td><td>Compiles</td></tr>
-    <tr><td>9</td><td><span class="badge p2">P2</span></td><td>E2E test (ci_disabled)</td><td>tezosx.ml, kernel Cargo.toml</td><td>Requires FF</td><td>Validated manually</td></tr>
+    <tr><td>8</td><td><span class="badge p2">P2</span></td><td>Kernel: dynamic FF + durable storage impl</td><td>mir_ctx.rs, storage.rs, chains.rs</td><td></td><td>Compiles</td></tr>
+    <tr><td>9</td><td><span class="badge p2">P2</span></td><td>E2E test</td><td>tezosx.ml</td><td></td><td>Validated manually</td></tr>
   </tbody>
 </table>
 
