@@ -64,7 +64,7 @@
 
 <header>
   <h1>Implementation Plan: <code>INDEX_ADDRESS</code> / <code>GET_ADDRESS_INDEX</code></h1>
-  <p class="subtitle">Branch: <code>saroupille@mir-address-registry</code> &mdash; Feature-flagged. Phase 1 done (25 unit + 10 TZT tests).</p>
+  <p class="subtitle">Branch: <code>saroupille@mir-address-registry</code> &mdash; 9 commits. Feature-flagged. 25 unit + 10 TZT + 1 E2E. MR: <a href="https://gitlab.com/tezos/tezos/-/merge_requests/21255">!21255</a></p>
 </header>
 
 <div class="container">
@@ -803,10 +803,10 @@ cargo test --features address-registry       <span class="cm"># 4 new view tests
     <tr><td>3</td><td><span class="badge p1">P1</span></td><td>Interpreter + gas (replaces todo!)</td><td>gas.rs, interpreter.rs</td><td>Interp gated, gas not</td><td>12 interp tests</td></tr>
     <tr><td>4</td><td><span class="badge p1">P1</span></td><td>TZT tests</td><td>tzt data</td><td>Run with --features</td><td>8 TZT + snapshot</td></tr>
     <tr><td>5</td><td><span class="badge p1">P1</span></td><td>Combined contract TZT</td><td>tzt data</td><td>Run with --features</td><td>1 TZT</td></tr>
-    <tr><td></td><td></td><td>Adversarial tests</td><td>interpreter.rs, tzt data</td><td></td><td>5 unit + 2 TZT</td></tr>
-    <tr><td>6</td><td><span class="badge p2">P2</span></td><td>Kernel: enable FF + implement</td><td>mir_ctx.rs, Cargo.toml</td><td>Activated</td><td>MockCtx tests</td></tr>
-    <tr><td>7</td><td><span class="badge p2">P2</span></td><td>E2E test</td><td>tezt test</td><td>&mdash;</td><td>E2E scenario</td></tr>
-    <tr><td>8</td><td><span class="badge bonus">Bonus</span></td><td>View restriction</td><td>typechecker.rs</td><td>Gated</td><td>4 view tests</td></tr>
+    <tr><td>6</td><td><span class="badge p1">P1</span></td><td>Adversarial tests</td><td>interpreter.rs, tzt data</td><td></td><td>5 unit + 2 TZT</td></tr>
+    <tr><td>7</td><td><span class="badge p1">P1</span></td><td>INDEX stability test</td><td>interpreter.rs, tzt data</td><td></td><td>1 unit</td></tr>
+    <tr><td>8</td><td><span class="badge p2">P2</span></td><td>Kernel: durable storage impl</td><td>mir_ctx.rs, Cargo.toml</td><td>Gated</td><td>Compiles</td></tr>
+    <tr><td>9</td><td><span class="badge p2">P2</span></td><td>E2E test (ci_disabled)</td><td>tezosx.ml, kernel Cargo.toml</td><td>Requires FF</td><td>Validated manually</td></tr>
   </tbody>
 </table>
 
